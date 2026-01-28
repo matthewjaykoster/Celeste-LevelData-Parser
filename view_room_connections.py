@@ -1,7 +1,11 @@
-from SourceRoom import SourceRoom
-from celeste_data_file_parser import parseCelesteLevelData
+"""
+Script which performs the simple task of listing all room connections contained with Celeste Level Data.
+"""
 
-rawLevelData = parseCelesteLevelData()
+from SourceRoom import SourceRoom
+from celeste_data_file_reader import readCelesteLevelData
+
+rawLevelData = readCelesteLevelData()
 
 for level in rawLevelData.levels:
     print(f'Level: {level.display_name} ({len(level.rooms)} rooms)')
