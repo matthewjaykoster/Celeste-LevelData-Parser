@@ -1,6 +1,6 @@
 # Celeste-LevelData-Parser
 
-Small toolset which enables parsing of the Celeste Open World Archipelago level data file.
+Small toolset which enables parsing of the [Celeste Open World Archipelago level data file](https://github.com/PoryGoneDev/Pory_Archipelago/blob/main/worlds/celeste_open_world/data/CelesteLevelData.json) located in [PoryGone's](https://github.com/PoryGoneDev) custom [AP World](https://github.com/PoryGoneDev/Pory_Archipelago) built to handle a variety of Archipelago worlds, including Celeste Open World.
 
 Primarily used to build logic chains from the base room of a level to all of the possible checks in that level for export into my [Celeste Open World PopTracker Pack](https://github.com/matthewjaykoster/Celeste-OW-Archipelago-Tracker).
 
