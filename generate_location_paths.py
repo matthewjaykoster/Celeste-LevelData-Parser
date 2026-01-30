@@ -5,10 +5,15 @@ from MissingDataException import MissingDataException
 from typing import Any, Dict, Iterator, List, Optional
 
 
-def findAllPaths(level: Level, sourceRoomName: str, sourceRoomRegionName: str, destinationRoomName: str) -> List[Any]:
+def findAllPaths(
+    level: Level,
+    sourceRoomName: str,
+    sourceRoomRegionName: str,
+    destinationRoomName: str,
+) -> List[Any]:
     """
     Finds all the paths through a Celeste Level between two rooms.
-    
+
     :param level: Search within this level.
     :type level: object
     :param sourceRoomName: Begin the search in this room.
@@ -23,43 +28,57 @@ def findAllPaths(level: Level, sourceRoomName: str, sourceRoomRegionName: str, d
         raise MissingDataException("Level has no defined rooms.")
 
     sourceRoom = next(
-        (room for room in level.rooms if room.name == sourceRoomName),
-        None
+        (room for room in level.rooms if room.name == sourceRoomName), None
     )
     if sourceRoom is None:
-        raise MissingDataException(f'Unable to find source room named {sourceRoomName}')
-    
+        raise MissingDataException(f"Unable to find source room named {sourceRoomName}")
+
     sourceRegion = next(
-        (region for region in sourceRoom.regions if region.name == sourceRoomRegionName),
-        None
+        (
+            region
+            for region in sourceRoom.regions
+            if region.name == sourceRoomRegionName
+        ),
+        None,
     )
     if sourceRegion is None:
-        raise MissingDataException(f'Unable to find source room region named {sourceRoomName}')
+        raise MissingDataException(
+            f"Unable to find source room region named {sourceRoomName}"
+        )
 
     destinationRoom = next(
-        (room for room in level.rooms if room.name == destinationRoomName),
-        None
+        (room for room in level.rooms if room.name == destinationRoomName), None
     )
     if destinationRoom is None:
-        raise MissingDataException(f'Unable to find source room named {destinationRoomName}')
-    
-    print(f'Finding path from Room {sourceRoomName} -> {sourceRoomRegionName} to Room {destinationRoomName}.')
+        raise MissingDataException(
+            f"Unable to find source room named {destinationRoomName}"
+        )
+
+    print(
+        f"Finding path from Room {sourceRoomName} -> {sourceRoomRegionName} to Room {destinationRoomName}."
+    )
     roomConnectionPath = findPathBetweenRooms(level, sourceRoom, destinationRoom)
     return roomConnectionPath
 
-def findPathBetweenRooms(level: Level, sourceRoom: Room, destinationRoom: Room) -> List[List[RoomConnection]]:
+
+def findPathBetweenRooms(
+    level: Level, sourceRoom: Room, destinationRoom: Room
+) -> List[List[RoomConnection]]:
     # Convert room connections to a graph for rapid access
     roomConnectionsGraph = defaultdict(list)
     for conn in level.room_connections:
         roomConnectionsGraph[conn.source_room].append(conn)
 
-    return list(findPathFromRoomConnections(roomConnectionsGraph, sourceRoom.name, destinationRoom.name))
+    return list(
+        findPathFromRoomConnections(
+            roomConnectionsGraph, sourceRoom.name, destinationRoom.name
+        )
+    )
+
 
 def findPathFromRoomConnections(
-        graph: Dict[str, List[RoomConnection]],
-        start: str,
-        destination: str
-    ) -> Iterator[List[RoomConnection]]:
+    graph: Dict[str, List[RoomConnection]], start: str, destination: str
+) -> Iterator[List[RoomConnection]]:
     """
     Iteratively find all paths from `start` to `destination` in a DAG of RoomConnections.
     Avoids revisiting the same room in a path to prevent loops.
@@ -85,8 +104,12 @@ result = findAllPaths(rawLevelData.levels[1], "1", "main", "8")
 
 print("===========")
 for index, path in enumerate(result):
-    print(f"Path {index + 1}: {" | ".join(
-        f"{step.source_room} {step.source_door}->{step.dest_room} {step.dest_door}"
-        for step in path
-    )}")
+    print(
+        f"Path {index + 1}: {
+            ' | '.join(
+                f'{step.source_room} {step.source_door}->{step.dest_room} {step.dest_door}'
+                for step in path
+            )
+        }"
+    )
     print("===========")
