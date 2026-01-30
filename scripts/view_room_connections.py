@@ -2,8 +2,8 @@
 Script which performs the simple task of listing all room connections contained with Celeste Level Data.
 """
 
-from SourceRoom import SourceRoom
-from celeste_data_file_reader import readCelesteLevelData
+from classes.SourceRoom import SourceRoom
+from data.celeste_data_file_reader import readCelesteLevelData
 
 rawLevelData = readCelesteLevelData()
 

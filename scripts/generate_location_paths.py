@@ -1,7 +1,7 @@
-from celeste_data_file_reader import readCelesteLevelData
 from collections import defaultdict
+from classes.MissingDataException import MissingDataException
+from data.celeste_data_file_reader import readCelesteLevelData
 from data.CelesteLevelData import Level, Region, Room, RoomConnection
-from MissingDataException import MissingDataException
 from typing import Any, Dict, Iterator, List
 
 
@@ -224,4 +224,4 @@ regionPaths = findRegionPathsWithinRoom(
     sourceRegion="bottom",
     destinationRegion="top",
 )
-# printRegionPathsWithLogic(regionPaths)
+printRegionPathsWithLogic(regionPaths)
