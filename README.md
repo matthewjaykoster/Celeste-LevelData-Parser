@@ -8,4 +8,14 @@ Primarily used to build logic chains from the base room of a level to all of the
 
 Requires Python 3.14.2.
 
-Run any of the root scripts using Python and you should be good to go. However, these tools were purpose-built and not really intended for use or consumption outside those purposes, so that's all the documentation I'll be providing.
+Run any of the scripts using Python and you should be good to go. However, these tools were purpose-built and not really intended for use or consumption outside those purposes, so that's all the documentation I'll be providing.
+
+### Typical Use
+
+Run the scripts in the following order:
+
+1. `./scripts/generate_locations.py`
+2. `./scripts/generate_location_paths.py`
+3. `./scripts/generate_logic.py`
+
+At the end of this sequence, you should have generated a datafile with the necessary logic located at `./data/CelesteLocationData.json`.

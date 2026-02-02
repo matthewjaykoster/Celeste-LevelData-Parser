@@ -2,13 +2,14 @@
 Script which performs the simple task of listing all room connections contained with Celeste Level Data.
 """
 
+from classes.DebugLogger import DebugLogger
 from classes.SourceRoom import SourceRoom
 from data.celeste_data_file_reader import readCelesteLevelData
 
 rawLevelData = readCelesteLevelData()
 
 for level in rawLevelData.levels:
-    print(f"Level: {level.display_name} ({len(level.rooms)} rooms)")
+    DebugLogger.logDebug(f"Level: {level.display_name} ({len(level.rooms)} rooms)")
 
     # Load data from json connections
     connectionSourceRooms = {}
@@ -31,9 +32,11 @@ for level in rawLevelData.levels:
 
     # Output
     if len(connectionSourceRooms) > 0:
-        print("Room Flow:")
+        DebugLogger.logDebug("Room Flow:")
         for room_id, source in connectionSourceRooms.items():
             for room in source.next_rooms:
-                print(f"  {room_id} {room['source_door']} to {room['dest_room']}")
+                DebugLogger.logDebug(
+                    f"  {room_id} {room['source_door']} to {room['dest_room']}"
+                )
 
-    print("===================================")
+    DebugLogger.logDebug("===================================")
