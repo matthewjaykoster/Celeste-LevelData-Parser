@@ -54,7 +54,7 @@ class CelesteLocationCheck:
         List[str]
     ]  # The location-specific logic, not inclusive of the path taken to find the location.
     region_paths_to_location: List[
-        List[CelesteLocationCheckPathRegion]
+        CelesteLocationCheckPath
     ]  # The path of regions from the origin of a given Celeste level to the location.
 
     @classmethod
@@ -69,15 +69,27 @@ class CelesteLocationCheck:
             location_type=data["location_type"],
             location_rule=data["location_rule"],
             region_paths_to_location=[
-                [
-                    CelesteLocationCheckPathRegion.fromJsonDict(regionPathNode)
-                    for regionPathNode in list
-                ]
-                for list in data["region_paths_to_location"]
+                CelesteLocationCheckPath.fromJsonDict(checkpath)
+                for checkpath in data["region_paths_to_location"]
             ],
         )
 
     ##
+    def toJsonDict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class CelesteLocationCheckPath:
+    """A minimal representation of a Celeste Region Path"""
+
+    regions: List[str]
+    rules: List[List[List[str]]]
+
+    @classmethod
+    def fromJsonDict(cls, data: dict[str, Any]) -> CelesteLocationCheckPath:
+        return CelesteLocationCheckPath(regions=data["regions"], rules=data["rules"])
+
     def toJsonDict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -92,26 +104,30 @@ class CelesteLocationCheckPathRegion:
     @classmethod
     def fromJsonDict(cls, data: dict[str, Any]) -> CelesteLocationCheckPathRegion:
         return CelesteLocationCheckPathRegion(
-            region_name=data["region"], rule_to_next=data["rule_to_next"]
+            region_name=data["region_name"], rule_to_next=data["rule_to_next"]
         )
 
     @classmethod
-    def fromCelesteRegionPath(
-        cls, region: Region, nextRegion: Optional[Region] = None
+    def fromCelesteRegionPathNode(
+        cls,
+        currentRegionNode: CelestePathRegionNode,
+        nextRegionNode: Optional[CelestePathRegionNode] = None,
     ) -> CelesteLocationCheckPathRegion:
         return CelesteLocationCheckPathRegion(
-            region_name=region.name,
+            region_name=f"{currentRegionNode.room_name}-{currentRegionNode.region.name}",
             rule_to_next=(
                 []
-                if nextRegion is None
+                if nextRegionNode is None
+                or currentRegionNode.room_name
+                != nextRegionNode.room_name  # If we don't do this, we get an issue if the next room's door entry region name is the same as a region connected to the current region's exit door region
                 else next(
                     # Note: If we miss a connection here, it's often an indicator that we're doing
                     # a room transition, so we let it slide. I'd like a check here but I don't
                     # want to refactor the pathfinding logic to include room data.
                     (
                         connection.rule
-                        for connection in region.connections
-                        if connection.dest == nextRegion.name
+                        for connection in currentRegionNode.region.connections
+                        if connection.dest == nextRegionNode.region.name
                     ),
                     [],
                 )
@@ -120,3 +136,11 @@ class CelesteLocationCheckPathRegion:
 
     def toJsonDict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class CelestePathRegionNode:
+    """A Celeste Path Region which is aware of its room."""
+
+    room_name: str
+    region: Region

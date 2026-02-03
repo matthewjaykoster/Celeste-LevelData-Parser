@@ -18,4 +18,4 @@ def writeLocationsToJsonDataFile(locations: List[CelesteLocationCheck]):
     with outputPath.open("w", encoding="utf-8") as f:
         json.dump(jsonData, f, indent=2)
 
-    DebugLogger.logDebug("Location data written successfully")
+    DebugLogger.logDebug("Location data written successfully.")

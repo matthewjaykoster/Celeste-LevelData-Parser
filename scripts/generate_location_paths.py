@@ -5,7 +5,11 @@ Generates logical pathways through a Celeste level for every location contained 
 from collections import defaultdict
 from classes.DebugLogger import DebugLogger
 from classes.MissingDataException import MissingDataException
-from data.CelesteLocationData import CelesteLocationCheckPathRegion
+from data.CelesteLocationData import (
+    CelesteLocationCheckPath,
+    CelesteLocationCheckPathRegion,
+    CelestePathRegionNode,
+)
 from data.celeste_data_file_reader import readCelesteLevelData, readCelesteLocationData
 from data.CelesteLevelData import CelesteLevelData, Level, Region, Room, RoomConnection
 from typing import Any, Dict, Iterator, List, Optional, TypeVar
@@ -57,7 +61,7 @@ def findAllPaths(
     sourceRegionName: str,
     destinationRoomName: str,
     destinationRegionName: str,
-) -> List[List[Region]]:
+) -> List[List[CelestePathRegionNode]]:
     """Finds all the paths through a Celeste Level between two rooms as a series of regions.
 
     Args:
@@ -115,10 +119,10 @@ def findAllPaths(
         destinationRegionName,
     )
 
-    allRegionPaths: List[List[Region]] = []
+    allRegionPaths: List[List[CelestePathRegionNode]] = []
 
     for roomConnPath in roomConnectionPaths:
-        fullRegionPaths: List[List[Region]] = []
+        fullRegionPaths: List[List[CelestePathRegionNode]] = []
 
         # Find paths within all rooms between source and destination
         for index, roomConn in enumerate(roomConnPath):
@@ -132,7 +136,13 @@ def findAllPaths(
             currTargetRegionName = roomConn.source_door
 
             regionPathsThroughRoom = getRegionPathsThroughRoom(
-                level, roomConn.source_room, currSourceRegionName, currTargetRegionName
+                level,
+                roomConn.source_room,
+                currSourceRegionName,
+                currTargetRegionName,
+            )
+            regionNodePathsThroughRoom = _convertRegionPathsToRegionNodesWithinRoom(
+                regionPathsThroughRoom, roomConn.source_room
             )
 
             if len(regionPathsThroughRoom) == 0:
@@ -142,21 +152,30 @@ def findAllPaths(
                 )
 
             # Nasty combinatorial
-            fullRegionPaths = _combineRegionPaths(
-                fullRegionPaths, regionPathsThroughRoom
+            fullRegionPaths = _combineRegionNodePaths(
+                fullRegionPaths, regionNodePathsThroughRoom
             )
 
-        # Find paths from destination room entry door to final region
+        # Find paths from destination room entry door to final region (so long as we actually need to)
         finalRoomConnection = _safeListGet(roomConnPath, len(roomConnPath) - 1)
         finalSourceRegionName = (
             finalRoomConnection.dest_door if finalRoomConnection else sourceRegionName
         )
-        destinationRegionPaths = findRegionPathsThroughRoom(
-            destinationRoom,
-            finalSourceRegionName,
-            destinationRegionName,
-        )
-        fullRegionPaths = _combineRegionPaths(fullRegionPaths, destinationRegionPaths)
+        if finalSourceRegionName != destinationRegionName:
+            destinationRegionPaths = findRegionPathsThroughRoom(
+                destinationRoom,
+                finalSourceRegionName,
+                destinationRegionName,
+            )
+            destinationRegionNodesPathsThroughRoom = (
+                _convertRegionPathsToRegionNodesWithinRoom(
+                    destinationRegionPaths, destinationRoom.name
+                )
+            )
+
+            fullRegionPaths = _combineRegionNodePaths(
+                fullRegionPaths, destinationRegionNodesPathsThroughRoom
+            )
 
         allRegionPaths.extend(fullRegionPaths)
 
@@ -169,7 +188,7 @@ def findRegionPathsThroughRoom(
     destinationRegion: str,
 ) -> List[List[Region]]:
     """Iteratively find all paths from `sourceRegion` to `destinationRegion` in a DAG of Regions within a room.
-    Avoids revisiting the same room in a path to prevent loops.
+    Avoids revisiting the same room in a path to prevent loops. Avoids paths where the only rule is "cannot_access".
 
     Args:
         room (Room): Search within this room.
@@ -189,7 +208,14 @@ def findRegionPathsThroughRoom(
     # Graph: region name -> list of destination region names
     regionGraph: Dict[str, List[str]] = defaultdict(list)
     for region in room.regions:
-        for connection in region.connections:
+        # Avoid connections where all rules contain "cannot_access"
+        validConnections = [
+            connection
+            for connection in region.connections
+            if len(connection.rule) == 0
+            or any("cannot_access" not in rule for rule in connection.rule)
+        ]
+        for connection in validConnections:
             regionGraph[region.name].append(connection.dest)
 
     paths: List[List[Region]] = []
@@ -353,7 +379,7 @@ def getRegionPathsCacheKey(
 
 
 def getRegionPathsThroughRoom(
-    level: Level, roomName: str, sourceRegionName, targetRegionName
+    level: Level, roomName: str, sourceRegionName: str, targetRegionName: str
 ) -> List[List[Region]]:
     """Gets all region paths through a room, using a cache if possible.
 
@@ -455,10 +481,28 @@ def printRegionPathsWithLogic(regionPaths: List[List[Region]]):
             print("[START] " + " ".join(line_parts))
 
 
-def _combineRegionPaths(
-    fullRegionPaths: List[List[Region]],
-    regionPathsThroughRoom: List[List[Region]],
-) -> List[List[Region]]:
+def _combineRegionNodePaths(
+    fullRegionPaths: List[List[CelestePathRegionNode]],
+    regionPathsThroughRoom: List[List[CelestePathRegionNode]],
+) -> List[List[CelestePathRegionNode]]:
+    """Combines accumulated region paths with all valid paths through a room.
+
+    This function builds all possible combined paths by appending each
+    path through the current room to each previously accumulated path.
+    Conceptually, this is a Cartesian product between the two inputs.
+
+    Args:
+        fullRegionPaths (List[List[RegionNode]]): The list of region paths
+            accumulated so far across previous rooms.
+        regionPathsThroughRoom (List[List[RegionNode]]): All valid region paths
+            through the current room.
+
+    Returns:
+        List[List[RegionNode]]: A new list of combined region paths. If
+        `fullRegionPaths` is empty, this will return a copy of
+        `regionPathsThroughRoom`. If `regionPathsThroughRoom` is empty,
+        this will return an empty list.
+    """
     if not fullRegionPaths:
         return [path.copy() for path in regionPathsThroughRoom]
 
@@ -466,6 +510,25 @@ def _combineRegionPaths(
         fullPath + roomPath
         for fullPath in fullRegionPaths
         for roomPath in regionPathsThroughRoom
+    ]
+
+
+def _convertRegionPathsToRegionNodesWithinRoom(
+    regionPaths: List[List[Region]],
+    roomName: str,
+) -> List[List[CelestePathRegionNode]]:
+    """Converts Region Paths into Region Node Paths.
+
+    Args:
+        regionPaths (List[List[Region]]): Region Path
+        roomName (str): Room in which all regions in the path reside.
+
+    Returns:
+        List[List[RegionNode]]: The same list, converted to Region Nodes.
+    """
+    return [
+        [CelestePathRegionNode(room_name=roomName, region=region) for region in path]
+        for path in regionPaths
     ]
 
 
@@ -487,11 +550,25 @@ def _safeListGet(lst: List[T], idx: int) -> Optional[T]:
 ################
 # Script Logic #
 ################
+
+# NOTE: Close CelesteLocationData.json before running this otherwise the update will be SLOOOOOOOOW.
+
 rawCelesteLevelData = readCelesteLevelData()
 rawCelesteLocationData = readCelesteLocationData()
-for index, location in enumerate(rawCelesteLocationData.locations):
+locations = rawCelesteLocationData.locations
+
+# Leave for testing/debugging purposes
+# locations = (
+#     location
+#     for location in rawCelesteLocationData.locations
+#     if location.level_name == "1a"
+#     and location.room_name == "s1"
+#     and location.region_name == "east"
+# )
+
+for index, location in enumerate(locations):
     level = getLevel(rawCelesteLevelData, location.level_name)
-    paths = findAllPaths(
+    paths: List[List[CelestePathRegionNode]] = findAllPaths(
         level,
         CELESTE_LEVEL_INITIAL_SOURCE_MAP[level.name]["source_room"],
         CELESTE_LEVEL_INITIAL_SOURCE_MAP[level.name]["source_region"],
@@ -499,23 +576,35 @@ for index, location in enumerate(rawCelesteLocationData.locations):
         location.region_name,
     )
 
-    regionPathsToLocation: List[List[CelesteLocationCheckPathRegion]] = []
+    # Convert paths into lists of minmal nodes, and then flatten those nodes into singular data structures.
+    regionNodePaths: List[List[CelesteLocationCheckPathRegion]] = []
     for path in paths:
         convertedPath: List[CelesteLocationCheckPathRegion] = []
         for i in range(len(path) - 1):
             currentRegion = path[i]
             nextRegion = path[i + 1]
-            convertedPath.append(
-                CelesteLocationCheckPathRegion.fromCelesteRegionPath(
-                    currentRegion, nextRegion
-                )
+            node = CelesteLocationCheckPathRegion.fromCelesteRegionPathNode(
+                currentRegion, nextRegion
             )
+            convertedPath.append(node)
 
-        convertedPath.append(
-            CelesteLocationCheckPathRegion.fromCelesteRegionPath(path[-1])
+        finalNode = CelesteLocationCheckPathRegion.fromCelesteRegionPathNode(path[-1])
+        convertedPath.append(finalNode)
+
+        regionNodePaths.append(convertedPath)
+
+    # Flatten to a smaller data structure, removing empty lists to save space
+    regionPathsToLocation: List[CelesteLocationCheckPath] = []
+    for regionPath in regionNodePaths:
+        minimalLocationPath = CelesteLocationCheckPath(
+            list(regionPath.region_name for regionPath in regionPath),
+            list(
+                regionPath.rule_to_next
+                for regionPath in regionPath
+                if len(regionPath.rule_to_next) > 0
+            ),
         )
-
-        regionPathsToLocation.append(convertedPath)
+        regionPathsToLocation.append(minimalLocationPath)
 
     location.region_paths_to_location = regionPathsToLocation
 
