@@ -1,5 +1,6 @@
 # Local ignores
 data/CelesteLocationData.json
+data/CelesteLogicData.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/**

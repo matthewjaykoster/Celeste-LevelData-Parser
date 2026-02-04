@@ -83,7 +83,22 @@ class CelesteLocationCheck:
 class CelesteLocationCheckPath:
     """A minimal representation of a Celeste Region Path"""
 
+    # The list of regions which leads from the origin of a Celeste Level to the location.
     regions: List[str]
+
+    # A triple-nested List of logic rules representing the necessary unlocks to get to a location.
+    # using the list of regions above. The outermost list represents the "path" of logic, and each
+    # pair of inner lists represents a logic rule for a single step in the process, using the outer
+    # of the two lists to represent logical ORs and the inner of the two lists to represent logical
+    # ANDs.
+    #
+    # Example: [ [ [ "dash_refills" ] ], [ [ "springs", "dream_blocks" ] ] ] is a two-region
+    #           path, the first of which requires dash_refills and the second of which
+    #           requires springs and dream_blocks.
+    #
+    # Example: [ [ [ "dash_refills" ], [ "springs" ] ], [ [ "springs", "dream_blocks" ] ] ]
+    #           is a two-region path, the first of which requires dash refills OR springs and
+    #           the second of which requires springs and dream blocks.
     rules: List[List[List[str]]]
 
     @classmethod
@@ -121,9 +136,6 @@ class CelesteLocationCheckPathRegion:
                 or currentRegionNode.room_name
                 != nextRegionNode.room_name  # If we don't do this, we get an issue if the next room's door entry region name is the same as a region connected to the current region's exit door region
                 else next(
-                    # Note: If we miss a connection here, it's often an indicator that we're doing
-                    # a room transition, so we let it slide. I'd like a check here but I don't
-                    # want to refactor the pathfinding logic to include room data.
                     (
                         connection.rule
                         for connection in currentRegionNode.region.connections
