@@ -12,7 +12,8 @@ class CelesteLogicData:
     def fromJsonDict(cls, data: dict[str, Any]) -> CelesteLogicData:
         return CelesteLogicData(
             locationLogic=[
-                LocationCheckLogic.fromJsonDict(logic) for logic in data["logic"]
+                LocationCheckLogic.fromJsonDict(logic)
+                for logic in data["locationLogic"]
             ]
         )
 
@@ -44,7 +45,7 @@ class LocationCheckLogic:
             room_name=data["room_name"],
             location_display_name=data["location_display_name"],
             location_type=data["location_type"],
-            logic_rule=data["location_rule"],
+            logic_rule=data["logic_rule"],
         )
 
     def toJsonDict(self) -> dict[str, Any]:

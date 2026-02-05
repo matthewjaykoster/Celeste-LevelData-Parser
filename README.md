@@ -17,5 +17,6 @@ Run the scripts in the following order:
 1. `./scripts/generate_locations.py`
 2. `./scripts/generate_location_paths.py`
 3. `./scripts/generate_logic.py`
+4. `./scripts/save_logic_to_lua_json.py`
 
-At the end of this sequence, you should have generated a datafile with the necessary logic located at `./data/CelesteLocationData.json`.
+At the end of this sequence, you should have generated a datafile with the necessary logic located at `./data/CelesteLogicData.json` and loaded the relevant logic to each of the locations within the PopTracker Locations JSON.
