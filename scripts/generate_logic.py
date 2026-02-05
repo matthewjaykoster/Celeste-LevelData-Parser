@@ -100,15 +100,16 @@ def handleLogicDataMapping(rawCelesteLocationData: CelesteLocationData):
     """
     for location in rawCelesteLocationData.locations:
         for regionPath in location.region_paths_to_location:
-            regionPath.rules = remapKeyLogicWithKeysanity(regionPath.rules)
+            regionPath.rules = remapLogicRules(regionPath.rules)
 
 
-def remapKeyLogicWithKeysanity(
+def remapLogicRules(
     logic: List[List[List[str]]],
 ) -> List[List[List[str]]]:
     """
-    Remaps key-based logic rules using KEY_TO_LUA_KEYCODE_MAP.
-    Adds an OR branch for KEYSANITY being disabled when a remap occurs.
+    Remaps logic rules as needed.
+        Uses KEY_TO_LUA_KEYCODE_MAP to modify key names to their related lua-mapped item names.
+        Adds an OR branch for KEYSANITY being disabled when a key remap occurs.
     """
 
     remappedLogic: List[List[List[str]]] = []
@@ -173,11 +174,15 @@ locations = rawCelesteLocationData.locations
 locationLogic: List[LocationCheckLogic] = []
 for location in locations:
     allRules: List[List[str]] = []
-    for regionPath in location.region_paths_to_location:
-        # 2 - Collapse "rule paths" into logical ANDs and ORs, appending multiple "rule paths" using ORs
-        if len(location.location_rule) > 0:
-            regionPath.rules.append(location.location_rule)
-        allRules = allRules + collapseLocationCheckPathLogic(regionPath.rules)
+
+    # 2 - Collapse "rule paths" into logical ANDs and ORs, appending multiple "rule paths" using ORs
+    if len(location.region_paths_to_location) > 0:
+        for regionPath in location.region_paths_to_location:
+            if len(location.location_rule) > 0:
+                regionPath.rules.append(location.location_rule)
+            allRules = allRules + collapseLocationCheckPathLogic(regionPath.rules)
+    elif len(location.location_rule) > 0:
+        allRules = allRules + collapseLocationCheckPathLogic([location.location_rule])
 
     # 3 - Remove duplicate, proper subset, and invalid rules
     allRules = cullRules(allRules)

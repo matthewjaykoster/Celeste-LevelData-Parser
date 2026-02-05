@@ -49,10 +49,65 @@ def buildSectionName(locationLogic: LocationCheckLogic) -> str:
 
 def convertLogicRules(logicRules: List[List[str]]) -> List[str]:
     """
-    Converts logic rules from List[List[str]] into List[str] by
-    joining inner lists with commas.
+    Converts logic rules into a format understood by PopTracker's LUA-read JSON files.
     """
-    return [",".join(ruleGroup) for ruleGroup in logicRules]
+    result = []
+    for ruleGroup in logicRules:
+        mappedRuleGroup = []
+        for rule in ruleGroup:
+            # Strip underscores from all non-function rules. Functions are denoted with a leading $.
+            if rule.startswith("$"):
+                mappedRuleGroup.append(rule)
+            else:
+                mappedRuleGroup.append(rule.replace("_", ""))
+
+        # Join inner lists into comma-separated strings
+        result.append(",".join(mappedRuleGroup))
+
+    return result
+
+
+def ensureAccessRules(affectedFiles: set):
+    """
+    Ensure 'access_rules' exists in all relevant JSON structures. There's an easily misunderstood
+    feature of PopTracker where child access_rules do not get run if no parent is defined.
+    """
+    DebugLogger.logDebug("Ensuring that access_rules fields exist in all JSON files.")
+    for fileName in POPTRACKER_LOCATION_JSON_DIRECTORY.glob("*.json"):
+        jsonData = JSON_FILE_CACHE.get(fileName.name) or _loadFileIntoCache(
+            fileName.name
+        )
+        updated = False
+
+        # The top-level JSON file is a list of level data objects
+        for levelData in jsonData:
+            # Ensure access_rules exists at top level
+            if "access_rules" not in levelData:
+                levelData["access_rules"] = []
+                updated = True
+
+            # Sections at top level (some levels may have sections directly)
+            for section in levelData.get("sections", []):
+                if "access_rules" not in section and "ref" not in section:
+                    section["access_rules"] = []
+                    updated = True
+
+            # Children
+            for child in levelData.get("children", []):
+                if "access_rules" not in child:
+                    child["access_rules"] = []
+                    updated = True
+
+                # Sections within children
+                for section in child.get("sections", []):
+                    if "access_rules" not in section and "ref" not in section:
+                        section["access_rules"] = []
+                        updated = True
+
+        if updated and not DRY_RUN:
+            DebugLogger.logDebug(f"Added access_rules field to {fileName.name}.")
+            affectedFiles.add(fileName.name)
+            JSON_FILE_CACHE[fileName.name] = jsonData
 
 
 def findLevelData(
@@ -126,6 +181,11 @@ def flushJsonFileCacheToDisk() -> None:
     DebugLogger.logDebug("Save complete.")
 
 
+def getBaseLevelName(levelDisplayName: str) -> str:
+    # "Forsaken City A" -> "Forsaken City"
+    return levelDisplayName.rsplit(" ", 1)[0]
+
+
 def getTargetJsonForLocationLogic(
     locationLogic: LocationCheckLogic,
 ) -> List[Dict[str, Any]]:
@@ -176,19 +236,15 @@ def _loadFileIntoCache(targetFileName: str) -> List[Dict[str, Any]]:
     return JSON_FILE_CACHE[targetFileName]
 
 
-def getBaseLevelName(levelDisplayName: str) -> str:
-    # "Forsaken City A" -> "Forsaken City"
-    return levelDisplayName.rsplit(" ", 1)[0]
-
-
 #################
 # Script Logic  #
 #################
-
-
 def main() -> None:
     if POPTRACKER_LOCATION_JSON_DIRECTORY is None:
         raise RuntimeError("POPTRACKER_LOCATION_JSON_DIRECTORY must be set")
+
+    affectedFiles = set()
+    ensureAccessRules(affectedFiles)
 
     rawLogicData = readCelesteLogicData()
 
@@ -196,7 +252,6 @@ def main() -> None:
     ignoredCount = 0
     missingSectionCount = 0
     updatedCount = 0
-    affectedFiles = set()
 
     for locationLogic in rawLogicData.locationLogic:
         if locationLogic.location_type in IGNORE_LOCATION_TYPES:
@@ -204,9 +259,6 @@ def main() -> None:
             continue
 
         section = findTargetSectionForLocationLogic(locationLogic)
-        targetFileName = LEVEL_TO_FILE_MAP.get(
-            getBaseLevelName(locationLogic.level_display_name)
-        )
         if section is None:
             missingSectionCount += 1
             print(
@@ -215,6 +267,10 @@ def main() -> None:
             continue
         injectLogicRulesIntoSection(section, locationLogic.logic_rule)
         updatedCount += 1
+
+        targetFileName = LEVEL_TO_FILE_MAP.get(
+            getBaseLevelName(locationLogic.level_display_name)
+        )
         affectedFiles.add(targetFileName)
 
     flushJsonFileCacheToDisk()
@@ -226,7 +282,7 @@ def main() -> None:
     print(f"Locations skipped (missing section): {missingSectionCount}")
     print(f"JSON files affected: {len(affectedFiles)}")
     if DRY_RUN:
-        print("Dry run: no files were written.")
+        print("[DRY RUN]: no files were written.")
 
 
 #################
@@ -234,7 +290,7 @@ def main() -> None:
 #################
 
 if __name__ == "__main__":
-    DRY_RUN = True  # Set False to actually write files
+    DRY_RUN = False  # Set False to actually write files
 
     POPTRACKER_LOCATION_JSON_DIRECTORY = Path(
         "C:/Coding/Celeste-OW-Archipelago-Tracker/locations"

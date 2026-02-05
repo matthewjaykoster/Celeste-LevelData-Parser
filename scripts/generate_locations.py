@@ -63,3 +63,29 @@ def getAllLocations() -> List[CelesteLocationCheck]:
 ################
 allLocations = getAllLocations()
 writeLocationsToJsonDataFile(allLocations)
+
+# TODO - Bug - roof03 (and other Resort Roof Locations) has no region_paths when clearly it should.
+"""
+{
+      "level_name": "3a",
+      "level_display_name": "Celestial Resort A",
+      "room_name": "roof03",
+      "region_name": "west",
+      "location_name": "strawberry",
+      "location_display_name": "Strawberry",
+      "location_type": "strawberry",
+      "location_rule": [],
+      "region_paths_to_location": []
+},
+"""
+
+# TODO - Bug - Mirror Temple A Level Clear has no region_paths
+"""
+{
+    "level_display_name": "Mirror Temple A",
+    "room_name": "e-11",
+    "location_display_name": "Level Clear",
+    "location_type": "level_clear",
+    "logic_rule": []
+},
+"""

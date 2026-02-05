@@ -3,7 +3,7 @@ from data.celeste_data_file_reader import readCelesteLocationData
 from scripts.generate_logic import (
     collapseLocationCheckPathLogic,
     cullRules,
-    remapKeyLogicWithKeysanity,
+    remapLogicRules,
 )
 
 
@@ -145,7 +145,7 @@ def _testPrintRemap():
         [["sinking_platforms"]],
     ]
 
-    sample = remapKeyLogicWithKeysanity(sample)
+    sample = remapLogicRules(sample)
     print(collapseLocationCheckPathLogic(sample))
 
 
