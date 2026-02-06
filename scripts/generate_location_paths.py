@@ -724,60 +724,6 @@ def getRoom(level: Level, roomName: str) -> Room:
     return ROOM_CACHE[roomCacheKey]
 
 
-def printRoomPaths(paths: List[List[Any]]):
-    DebugLogger.logDebug("===========")
-    for index, path in enumerate(paths):
-        DebugLogger.logDebug(
-            f"Path {index + 1}: {
-                ' | '.join(
-                    f'{step.source_room} {step.source_door}->{step.dest_room} {step.dest_door}'
-                    for step in path
-                )
-            }"
-        )
-        DebugLogger.logDebug("===========")
-
-
-def printRegionPathsWithLogic(regionPaths: List[List[Region]]):
-    """
-    Prints each path of regions to the console.
-
-    Format for each path:
-    region1 --[rules]--> region2 --[rules]--> region3 ...
-
-    Avoids repeating region names at boundaries.
-    """
-    for path in regionPaths:
-        if not path:
-            continue
-
-        line_parts = []
-        for i in range(len(path) - 1):
-            current = path[i]
-            next_region = path[i + 1]
-
-            # Flatten all rules from current to next_region
-            connection_rules = []
-            for conn in current.connections:
-                if conn.dest == next_region.name:
-                    for rule_set in conn.rule:
-                        connection_rules.extend(rule_set)
-
-            # Only include current.name at the start
-            if i == 0:
-                segment = f"{current.name} --[{', '.join(connection_rules)}]--> {next_region.name}"
-            else:
-                segment = f"--[{', '.join(connection_rules)}]--> {next_region.name}"
-
-            line_parts.append(segment)
-
-        # Handle single-region path
-        if len(path) == 1:
-            print("[START] " + path[0].name)
-        else:
-            print("[START] " + " ".join(line_parts))
-
-
 def _combineRegionNodePaths(
     fullRegionPaths: List[List[CelestePathRegionNode]],
     regionPathsThroughRoom: List[List[CelestePathRegionNode]],
@@ -858,10 +804,40 @@ locations = rawCelesteLocationData.locations
 # locations = list(
 #     location
 #     for location in rawCelesteLocationData.locations
-#     if location.level_name == "3a"
-#     and location.room_name == "s3"
-#     and location.region_name == "north"
+#     if location.level_name == "7a"
+#     and location.room_name == "c-06b"
+#     and location.region_name == "west"
 # )
+
+# Reflection A Level Clear is missing region paths (crystal heart might be wrong in the same way)
+"""
+{
+    "level_name": "6a",
+    "level_display_name": "Reflection A",
+    "room_name": "after-01",
+    "region_name": "goal",
+    "location_name": "clear",
+    "location_display_name": "Level Clear",
+    "location_type": "level_clear",
+    "location_rule": [],
+    "region_paths_to_location": []
+}
+"""
+
+# Summit A c-06b (strawberry side dream block columns) is missing region paths - minimally needs dream blocks
+"""
+{
+    "level_name": "7a",
+    "level_display_name": "The Summit A",
+    "room_name": "c-06b",
+    "region_name": "west",
+    "location_name": "strawberry",
+    "location_display_name": "Strawberry",
+    "location_type": "strawberry",
+    "location_rule": [],
+    "region_paths_to_location": []
+},
+"""
 
 startTime = time.perf_counter()
 lastCheckpointTime = startTime
