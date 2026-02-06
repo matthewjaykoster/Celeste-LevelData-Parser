@@ -133,7 +133,9 @@ class Door:
         )
 
 
-@dataclass
+@dataclass(
+    frozen=True
+)  # Frozen because we need to use these in a set during pathfinding.
 class RoomConnection:
     """Represents the data structure of a RoomConnection within the CelesteLevelData.json file."""
 
@@ -141,6 +143,18 @@ class RoomConnection:
     source_door: str
     dest_room: str
     dest_door: str
+
+    def connKey(self) -> tuple[str, str, str, str]:
+        """
+        A stable, hashable identity for this connection.
+        Used to detect revisits / memoize dead states.
+        """
+        return (
+            self.source_room,
+            self.source_door,
+            self.dest_room,
+            self.dest_door,
+        )
 
     @classmethod
     def fromJsonDict(cls, data: dict[str, Any]) -> RoomConnection:

@@ -2,7 +2,7 @@
 Generates logical pathways through a Celeste level for every location contained within /data/CelesteLogicData.json.
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from classes.DebugLogger import DebugLogger
 from classes.MissingDataException import MissingDataException
 from data.CelesteLocationData import (
@@ -12,11 +12,14 @@ from data.CelesteLocationData import (
 )
 from data.celeste_data_file_reader import readCelesteLevelData, readCelesteLocationData
 from data.CelesteLevelData import CelesteLevelData, Level, Region, Room, RoomConnection
-from typing import Any, Dict, Iterator, List, Optional, TypeVar
-
+from typing import Any, Dict, Iterator, List, Optional, Tuple, TypeVar
 from data.celeste_data_file_writer import writeLocationsToJsonDataFile
+import time
 
-CELESTE_LEVEL_INITIAL_SOURCE_MAP = {
+T = TypeVar("T")
+
+
+CELESTE_LEVEL_CONSTANTS = {
     "0a": {"source_room": "0", "source_region": "main"},
     "1a": {"source_room": "1", "source_region": "main"},
     "1b": {"source_room": "00", "source_region": "west"},
@@ -48,11 +51,109 @@ CELESTE_LEVEL_INITIAL_SOURCE_MAP = {
     "10c": {"source_room": "end-golden", "source_region": "bottom"},
 }
 
+# Measured max path lengths from a previous algorithm - needed to prune room graph
+CELESTE_LEVEL_MAX_PATH_LENGTHS = {
+    "0a": 11,
+    "1a": 53,
+    "1b": 32,
+    "1c": 6,
+    "2a": 54,
+    "2b": 34,
+    "2c": 6,
+    "3a": 45,
+    "3b": 46,
+    "3c": 6,
+    "4a": 74,
+    "4b": 40,
+    "4c": 6,
+    "5a": 70,
+    "5b": 43,
+    "5c": 6,
+    "6b": 56,
+    "6c": 6,
+    "7a": 153,
+    "7b": 56,
+    "7c": 6,
+    "9a": 61,
+    "9c": 8,
+    "10a": 78,
+    "10b": 118,
+}
+ROOM_PATH_LENGTH_BUFFER_MULTIPLIER = 1.5
+MIN_MAX_PATH_LENGTH = 10
+
+# Simple in-memory JSON caches
 LEVEL_CACHE = {}
 ROOM_CACHE = {}
-ROOM_CONN_PATH_CACHE = {}
 
-T = TypeVar("T")
+# Caches to help DFS move more quickly
+REACHABLE_ROOMS_CACHE: dict[tuple[str, str], set[str]] = {}
+REVERSE_ROOM_GRAPH_CACHE: dict[str, defaultdict[str, list[str]]] = {}
+ROOM_CONNECTION_GRAPH_CACHE: dict[str, defaultdict[str, list[RoomConnection]]] = {}
+ROOM_CONNECTION_PATH_CACHE = {}
+SUBLEVEL_ENTRY_EXIT_7A: Dict[str, Tuple[str, str]] = {
+    "a": ("a-00", "a-06"),  # a-06 connects to b-00
+    "b": ("b-00", "b-09"),  # b-09 connects to c-00
+    "c": ("c-00", "c-09"),  # c-09 connects to d-00
+    "d": ("d-00", "d-11"),  # d-11 connects to e-00b
+    "e": ("e-00", "e-13"),  # e-13 connects to f-00
+    "f": ("f-00", "f-11"),  # f-11 connects to g-00
+    "g": ("g-00", "g-03"),  # g-03 is the final exit
+}
+SUBLEVEL_PATH_CACHE_7A: Dict[str, List[List["RoomConnection"]]] = {}
+
+
+def buildConnectionGraphForLevel(
+    level: Level,
+) -> defaultdict[str, List[RoomConnection]]:
+    """Convert room connections within a level to a graph for rapid access
+
+    Args:
+        level (Level): The Celeste Level
+    """
+    roomConnectionsGraph = defaultdict(list)
+    for conn in level.room_connections:
+        roomConnectionsGraph[conn.source_room].append(conn)
+    return roomConnectionsGraph
+
+
+def buildReverseConnectionGraph(
+    roomConnectionsGraph: defaultdict[str, List[RoomConnection]],
+) -> defaultdict[str, List[str]]:
+    """Build a "reverse room" graph for a given level (e.g. dest -> src instead of forward).
+
+    Args:
+        roomConnectionsGraph (defaultdict[str, List[RoomConnection]]): The forward-looking graph (see buildConnectionGraphForLevel(...))
+    """
+    reverseGraph: Dict[str, List[str]] = defaultdict(list)
+    for src, conns in roomConnectionsGraph.items():
+        for conn in conns:
+            reverseGraph[conn.dest_room].append(src)
+    return reverseGraph
+
+
+def calculateReachableRoomsForDestination(
+    destinationRoomName: str, reverseGraph: defaultdict[str, List[str]]
+) -> set[str]:
+    """Determines which rooms can possibly reach a given destination via Breadth First Search.
+
+    Args:
+        destinationRoomName (str): The destination to reach.
+        reverseGraph (defaultdict[str, List[str]]): A reverse connection graph for a level (see buildReverseConnectionGraph())
+
+    Returns:
+        _type_: _description_
+    """
+    reachableRoomsForDestination: set[str] = set()
+    queue = [destinationRoomName]
+    while queue:
+        room = queue.pop()
+        if room in reachableRoomsForDestination:
+            continue
+        reachableRoomsForDestination.add(room)
+        for prevRoom in reverseGraph.get(room, []):
+            queue.append(prevRoom)
+    return reachableRoomsForDestination
 
 
 def findAllPaths(
@@ -247,36 +348,55 @@ def findRegionPathsThroughRoom(
 
 def findRoomPathsFromRoomConnections(
     graph: Dict[str, List[RoomConnection]],
+    reachableRoomsForDestination: set[str],
     sourceRoomName: str,
     destinationRoomName: str,
+    maxRoomVisits: int = 2,  # optional: limit re-entries into the same room
 ) -> Iterator[List[RoomConnection]]:
-    """Iteratively find all paths from `sourceRoomName` to `destinationRoomName` in a DAG of RoomConnections.
-    Avoids revisiting the same room in a path to prevent loops.
+    """Find all paths from sourceRoomName to destinationRoomName using DFS.
+    Optimized with destination reachability and max room visits.
+    Rooms may be revisited up to maxRoomVisits times via different connections.
 
     Args:
-        graph (Dict[str, List[RoomConnection]]): A dictionary of source room names keyed to its related connections.
-        sourceRoomName (str): Start at this room.
-        destinationRoomName (str): End at this room.
+        graph (Dict[str, List[RoomConnection]]): Maps room names to outgoing RoomConnections.
+        reachableRoomsForDestination (set[str]): The set of rooms which can possibly reach the destination.
+        sourceRoomName (str): Start room.
+        destinationRoomName (str): Destination room.
+        maxRoomVisits (int): How many times a room may be visited in the same path.
 
     Yields:
-        Iterator[List[RoomConnection]]: Each room connection as it is found to meet the criteria.
+        List[RoomConnection]: A path from source to destination.
     """
-    # Stack stores tuples: (current_room, path_so_far, rooms_seen_so_far)
-    stack: List[tuple[str, List[RoomConnection], set[str]]] = [
-        (sourceRoomName, [], {sourceRoomName})
+
+    # DFS stack: (currentRoom, pathSoFar, roomVisitCounts)
+    stack: list[tuple[str, list[RoomConnection], dict[str, int]]] = [
+        (sourceRoomName, [], defaultdict(int))
     ]
 
     while stack:
-        current, path, seen = stack.pop()
+        currentRoom, pathSoFar, roomVisitCounts = stack.pop()
 
-        if current == destinationRoomName:
-            yield path
+        # Increment visit count
+        roomVisitCounts[currentRoom] += 1
+
+        # Enforce max room visits
+        if roomVisitCounts[currentRoom] > maxRoomVisits:
             continue
 
-        for conn in graph.get(current, []):
-            next_room = conn.dest_room
-            if next_room not in seen:  # Prevent revisiting rooms in this path
-                stack.append((next_room, path + [conn], seen | {next_room}))
+        # Stop if this room cannot reach destination
+        if currentRoom not in reachableRoomsForDestination:
+            continue
+
+        # Yield path if we've reached the destination
+        if currentRoom == destinationRoomName:
+            yield pathSoFar
+            # Keep searching for alternative paths
+
+        for conn in graph.get(currentRoom, []):
+            nextRoom = conn.dest_room
+            # Copy visit counts for each path extension
+            newVisitCounts = roomVisitCounts.copy()
+            stack.append((nextRoom, pathSoFar + [conn], newVisitCounts))
 
 
 def findRoomPathsBetweenRooms(
@@ -301,18 +421,29 @@ def findRoomPathsBetweenRooms(
     """
 
     if sourceRoomName == destinationRoomName:
-        return []
+        return []  # Note: This is incorrect if we ever need to loop back to the origin. I don't believe this happens.
 
-    # Convert room connections to a graph for rapid access
-    roomConnectionsGraph = defaultdict(list)
-    for conn in level.room_connections:
-        roomConnectionsGraph[conn.source_room].append(conn)
+    # These get calculated for every location, so cache what we can
+    roomConnectionsGraph = getConnectionGraphForLevel(level)
 
-    potentialRoomPaths = list(
-        findRoomPathsFromRoomConnections(
-            roomConnectionsGraph, sourceRoomName, destinationRoomName
+    if level.name == "7a":
+        # Because 7a is a special baby boy WITH TOO MANY DAMN ROOMS
+        potentialRoomPaths = list(
+            findRoomPathsThrough7a(roomConnectionsGraph, destinationRoomName)
         )
-    )
+    else:
+        reachableRoomsForDestination = getReachableRoomsForDestination(
+            level, destinationRoomName
+        )
+
+        potentialRoomPaths = list(
+            findRoomPathsFromRoomConnections(
+                roomConnectionsGraph,
+                reachableRoomsForDestination,
+                sourceRoomName,
+                destinationRoomName,
+            )
+        )
 
     # Validate that each pair of connections represents a room that can actually be traversed.
     # Throw out any invalid paths.
@@ -363,13 +494,171 @@ def findRoomPathsBetweenRooms(
     return validRoomPaths
 
 
-def getLevel(levelData: CelesteLevelData, levelName: str):
+def findRoomPathsThrough7a(
+    graph: Dict[str, List["RoomConnection"]],
+    destinationRoomName: str,
+    maxRoomVisits: int = 2,
+) -> Iterator[List["RoomConnection"]]:
+    """
+    Compute all valid room paths through 7a from sublevel 'a' up to the sublevel
+    containing the destinationRoomName. Each sublevel is traversed independently.
+
+    Args:
+        graph: Full room graph for level 7a
+        destinationRoomName: Stop traversal at the sublevel containing this room
+        maxRoomVisits: Max room visits for each DFS
+
+    Yields:
+        List[RoomConnection]: Full path from 7a start to destinationRoomName
+    """
+
+    sublevels = ["a", "b", "c", "d", "e", "f", "g"]
+    destSublevel = destinationRoomName.split("-")[0]
+
+    # Only traverse sublevels up to the destination sublevel
+    sublevelsToTraverse = []
+    for s in sublevels:
+        sublevelsToTraverse.append(s)
+        if s == destSublevel:
+            break
+
+    pathsSoFar: List[List["RoomConnection"]] = [[]]
+
+    for sublevel in sublevelsToTraverse:
+        entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevel]
+        # If this is the sublevel containing the destination room, end there
+        sublevelDestRoom = destinationRoomName if sublevel == destSublevel else exitRoom
+
+        newPaths: List[List["RoomConnection"]] = []
+        for pathPrefix in pathsSoFar:
+            for subPath in findRoomPathsWithin7aSublevel(
+                graph, entryRoom, sublevelDestRoom, sublevel, maxRoomVisits
+            ):
+                newPaths.append(pathPrefix + subPath)
+
+        pathsSoFar = newPaths
+
+    for fullPath in pathsSoFar:
+        yield fullPath
+
+
+def findRoomPathsWithin7aSublevel(
+    graph: Dict[str, List[RoomConnection]],
+    sourceRoomName: str,
+    destinationRoomName: str,
+    sublevelLetter: str,
+    maxRoomVisits: int = 2,
+) -> Iterator[List[RoomConnection]]:
+    """
+    Find all room paths within a 7a sublevel between two rooms.
+
+    Optimized with:
+    - Precomputed sublevel entry/exit rooms
+    - Max room visits to avoid infinite loops
+    - Cached paths per sublevel
+
+    Args:
+        graph (Dict[str, List[RoomConnection]]): Forward graph of RoomConnections
+        sourceRoomName (str): Start room within the sublevel
+        destinationRoomName (str): End room within the sublevel
+        sublevelLetter (str): The letter of the sublevel (a-g)
+        maxRoomVisits (int): How many times a room may be revisited in a single path
+
+    Yields:
+        List[RoomConnection]: A valid path from sourceRoomName to destinationRoomName
+    """
+
+    # If computing all paths for the entire sublevel, check cache
+    entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevelLetter]
+    computeFullSublevel = (
+        sourceRoomName == entryRoom and destinationRoomName == exitRoom
+    )
+
+    if computeFullSublevel and sublevelLetter in SUBLEVEL_PATH_CACHE_7A:
+        for path in SUBLEVEL_PATH_CACHE_7A[sublevelLetter]:
+            yield path
+        return
+
+    # DFS stack: (currentRoom, pathSoFar, roomVisitCounts)
+    stack: List[Tuple[str, List["RoomConnection"], Dict[str, int]]] = [
+        (sourceRoomName, [], defaultdict(int))
+    ]
+    pathsFound: List[List["RoomConnection"]] = []
+
+    while stack:
+        currentRoom, pathSoFar, roomVisitCounts = stack.pop()
+
+        # Increment visit count
+        roomVisitCounts[currentRoom] += 1
+        if roomVisitCounts[currentRoom] > maxRoomVisits:
+            continue
+
+        # Yield path if we've reached the destination
+        if currentRoom == destinationRoomName:
+            pathsFound.append(pathSoFar)
+            yield pathSoFar
+            continue
+
+        # Explore outgoing connections
+        for conn in graph.get(currentRoom, []):
+            nextRoom = conn.dest_room
+            # Enforce sublevel boundary: can't leave the current sublevel
+            if not nextRoom.startswith(sublevelLetter + "-"):
+                continue
+            newVisitCounts = roomVisitCounts.copy()
+            stack.append((nextRoom, pathSoFar + [conn], newVisitCounts))
+
+    # Cache full sublevel paths
+    if computeFullSublevel:
+        SUBLEVEL_PATH_CACHE_7A[sublevelLetter] = pathsFound
+
+
+def getConnectionGraphForLevel(level: Level) -> defaultdict[str, list[RoomConnection]]:
+    """Return the forward graph for a level, caching by level.name."""
+    if level.name not in ROOM_CONNECTION_GRAPH_CACHE:
+        ROOM_CONNECTION_GRAPH_CACHE[level.name] = buildConnectionGraphForLevel(level)
+    return ROOM_CONNECTION_GRAPH_CACHE[level.name]
+
+
+def getLevel(levelData: CelesteLevelData, levelName: str) -> Level:
     level = LEVEL_CACHE.get(levelName)
     if level is None:
         level = next(level for level in levelData.levels if level.name == levelName)
         LEVEL_CACHE[levelName] = level
 
     return level
+
+
+def getMaxPathLengthForLevel(levelName: str) -> int:
+    """Defines the maximum allowed room path length by level (for algorithm path explosion pruning)
+
+    Args:
+        levelName (str): Celeste level name as defined in code (1a, 2b, etc)
+
+    Returns:
+        int: The max allowed room path length for that level.
+    """
+    base = CELESTE_LEVEL_MAX_PATH_LENGTHS.get(levelName)
+
+    if base is None:
+        # Fallback for unexpected levels
+        return 250
+
+    return max(
+        MIN_MAX_PATH_LENGTH,
+        int(base * ROOM_PATH_LENGTH_BUFFER_MULTIPLIER),
+    )
+
+
+def getReachableRoomsForDestination(level: Level, destinationRoomName: str) -> set[str]:
+    """Return reachable rooms for a destination, caching by (level.name, destinationRoomName)."""
+    cacheKey = (level.name, destinationRoomName)
+    if cacheKey not in REACHABLE_ROOMS_CACHE:
+        reverseGraph = getReverseGraphForLevel(level)
+        REACHABLE_ROOMS_CACHE[cacheKey] = calculateReachableRoomsForDestination(
+            destinationRoomName, reverseGraph
+        )
+    return REACHABLE_ROOMS_CACHE[cacheKey]
 
 
 def getRegionPathsCacheKey(
@@ -395,8 +684,8 @@ def getRegionPathsThroughRoom(
     roomPathCacheKey = getRegionPathsCacheKey(
         level, roomName, sourceRegionName, targetRegionName
     )
-    regionPathsThroughRoom: Optional[List[List[Region]]] = ROOM_CONN_PATH_CACHE.get(
-        roomPathCacheKey
+    regionPathsThroughRoom: Optional[List[List[Region]]] = (
+        ROOM_CONNECTION_PATH_CACHE.get(roomPathCacheKey)
     )
     if regionPathsThroughRoom is None:
         currRoom = next(room for room in level.rooms if room.name == roomName)
@@ -405,9 +694,17 @@ def getRegionPathsThroughRoom(
             currRoom, sourceRegionName, targetRegionName
         )
 
-        ROOM_CONN_PATH_CACHE[roomPathCacheKey] = regionPathsThroughRoom
+        ROOM_CONNECTION_PATH_CACHE[roomPathCacheKey] = regionPathsThroughRoom
 
     return regionPathsThroughRoom
+
+
+def getReverseGraphForLevel(level: Level) -> defaultdict[str, list[str]]:
+    """Return the reverse graph for a level, caching by level.name."""
+    if level.name not in REVERSE_ROOM_GRAPH_CACHE:
+        forwardGraph = getConnectionGraphForLevel(level)
+        REVERSE_ROOM_GRAPH_CACHE[level.name] = buildReverseConnectionGraph(forwardGraph)
+    return REVERSE_ROOM_GRAPH_CACHE[level.name]
 
 
 def getRoomCacheKey(level: Level, roomName: str) -> str:
@@ -557,21 +854,24 @@ rawCelesteLevelData = readCelesteLevelData()
 rawCelesteLocationData = readCelesteLocationData()
 locations = rawCelesteLocationData.locations
 
-# Leave for testing/debugging purposes
-# locations = (
+# [TEST/DEBUG] Leave for testing/debugging purposes
+# locations = list(
 #     location
 #     for location in rawCelesteLocationData.locations
-#     if location.level_name == "1a"
-#     and location.room_name == "s1"
-#     and location.region_name == "east"
+#     if location.level_name == "3a"
+#     and location.room_name == "s3"
+#     and location.region_name == "north"
 # )
+
+startTime = time.perf_counter()
+lastCheckpointTime = startTime
 
 for index, location in enumerate(locations):
     level = getLevel(rawCelesteLevelData, location.level_name)
     paths: List[List[CelestePathRegionNode]] = findAllPaths(
         level,
-        CELESTE_LEVEL_INITIAL_SOURCE_MAP[level.name]["source_room"],
-        CELESTE_LEVEL_INITIAL_SOURCE_MAP[level.name]["source_region"],
+        CELESTE_LEVEL_CONSTANTS[level.name]["source_room"],
+        CELESTE_LEVEL_CONSTANTS[level.name]["source_region"],
         location.room_name,
         location.region_name,
     )
@@ -608,7 +908,27 @@ for index, location in enumerate(locations):
 
     location.region_paths_to_location = regionPathsToLocation
 
-    if index % 50 == 0:
-        DebugLogger.logDebug(f"Calculated paths for {index + 1} locations.")
+    # Progress + timing every level change
+    prevLevel = _safeListGet(locations, index - 1)
+    if prevLevel is None:
+        DebugLogger.logDebug(f"Starting location calculations for level {level.name}.")
+    elif level.name != prevLevel.level_name:
+        now = time.perf_counter()
+        elapsedTotal = now - startTime
+        elapsedSinceLast = now - lastCheckpointTime
+        lastCheckpointTime = now
 
-writeLocationsToJsonDataFile(rawCelesteLocationData.locations)
+        DebugLogger.logDebug(
+            f"Calculated paths for {index + 1} locations | "
+            f"+{elapsedSinceLast:.1f}s | total {elapsedTotal:.1f}s"
+        )
+
+        DebugLogger.logDebug(f"Starting location calculations for level {level.name}.")
+
+endTime = time.perf_counter()
+DebugLogger.logDebug(
+    f"Finished path calculation for {len(locations)} locations in "
+    f"{endTime - startTime:.1f} seconds."
+)
+
+writeLocationsToJsonDataFile(locations)
