@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, List, Optional
 
@@ -110,49 +110,12 @@ class CelesteLocationCheckPath:
 
 
 @dataclass
-class CelesteLocationCheckPathRegion:
-    """A minimal representation of a node on a Celeste Region Path"""
-
-    region_name: str
-    rule_to_next: List[List[str]]
-
-    @classmethod
-    def fromJsonDict(cls, data: dict[str, Any]) -> CelesteLocationCheckPathRegion:
-        return CelesteLocationCheckPathRegion(
-            region_name=data["region_name"], rule_to_next=data["rule_to_next"]
-        )
-
-    @classmethod
-    def fromCelesteRegionPathNode(
-        cls,
-        currentRegionNode: CelestePathRegionNode,
-        nextRegionNode: Optional[CelestePathRegionNode] = None,
-    ) -> CelesteLocationCheckPathRegion:
-        return CelesteLocationCheckPathRegion(
-            region_name=f"{currentRegionNode.room_name}-{currentRegionNode.region.name}",
-            rule_to_next=(
-                []
-                if nextRegionNode is None
-                or currentRegionNode.room_name
-                != nextRegionNode.room_name  # If we don't do this, we get an issue if the next room's door entry region name is the same as a region connected to the current region's exit door region
-                else next(
-                    (
-                        connection.rule
-                        for connection in currentRegionNode.region.connections
-                        if connection.dest == nextRegionNode.region.name
-                    ),
-                    [],
-                )
-            ),
-        )
-
-    def toJsonDict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
 class CelestePathRegionNode:
     """A Celeste Path Region which is aware of its room."""
 
     room_name: str
     region: Region
+    regionKey: str = field(init=False)
+
+    def __post_init__(self):
+        self.regionKey = f"{self.room_name}-{self.region.name}"

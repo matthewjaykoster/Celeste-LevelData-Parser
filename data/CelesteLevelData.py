@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Any, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -65,6 +65,12 @@ class Region:
     name: str
     connections: List[Connection]
     locations: Optional[List[Location]]
+
+    # Precomputed: dest_region_name -> rule
+    ruleByDest: Dict[str, List[List[str]]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.ruleByDest = {conn.dest: conn.rule for conn in self.connections}
 
     @classmethod
     def fromJsonDict(cls, data: dict[str, Any]) -> Region:

@@ -7,7 +7,6 @@ from classes.DebugLogger import DebugLogger
 from classes.MissingDataException import MissingDataException
 from data.CelesteLocationData import (
     CelesteLocationCheckPath,
-    CelesteLocationCheckPathRegion,
     CelestePathRegionNode,
 )
 from data.celeste_data_file_reader import readCelesteLevelData, readCelesteLocationData
@@ -36,7 +35,7 @@ CELESTE_LEVEL_CONSTANTS = {
     "5a": {"source_room": "a-00b", "source_region": "west"},
     "5b": {"source_room": "start", "source_region": "west"},
     "5c": {"source_room": "00", "source_region": "west"},
-    "6a": {"source_room": "00", "source_region": "west"},
+    "6a": {"source_room": "00", "source_region": "east"},
     "6b": {"source_room": "a-00", "source_region": "bottom"},
     "6c": {"source_room": "00", "source_region": "west"},
     "7a": {"source_room": "a-00", "source_region": "west"},
@@ -51,37 +50,6 @@ CELESTE_LEVEL_CONSTANTS = {
     "10c": {"source_room": "end-golden", "source_region": "bottom"},
 }
 
-# Measured max path lengths from a previous algorithm - needed to prune room graph
-CELESTE_LEVEL_MAX_PATH_LENGTHS = {
-    "0a": 11,
-    "1a": 53,
-    "1b": 32,
-    "1c": 6,
-    "2a": 54,
-    "2b": 34,
-    "2c": 6,
-    "3a": 45,
-    "3b": 46,
-    "3c": 6,
-    "4a": 74,
-    "4b": 40,
-    "4c": 6,
-    "5a": 70,
-    "5b": 43,
-    "5c": 6,
-    "6b": 56,
-    "6c": 6,
-    "7a": 153,
-    "7b": 56,
-    "7c": 6,
-    "9a": 61,
-    "9c": 8,
-    "10a": 78,
-    "10b": 118,
-}
-ROOM_PATH_LENGTH_BUFFER_MULTIPLIER = 1.5
-MIN_MAX_PATH_LENGTH = 10
-
 # Simple in-memory JSON caches
 LEVEL_CACHE = {}
 ROOM_CACHE = {}
@@ -92,15 +60,15 @@ REVERSE_ROOM_GRAPH_CACHE: dict[str, defaultdict[str, list[str]]] = {}
 ROOM_CONNECTION_GRAPH_CACHE: dict[str, defaultdict[str, list[RoomConnection]]] = {}
 ROOM_CONNECTION_PATH_CACHE = {}
 SUBLEVEL_ENTRY_EXIT_7A: Dict[str, Tuple[str, str]] = {
-    "a": ("a-00", "a-06"),  # a-06 connects to b-00
-    "b": ("b-00", "b-09"),  # b-09 connects to c-00
-    "c": ("c-00", "c-09"),  # c-09 connects to d-00
-    "d": ("d-00", "d-11"),  # d-11 connects to e-00b
-    "e": ("e-00", "e-13"),  # e-13 connects to f-00
-    "f": ("f-00", "f-11"),  # f-11 connects to g-00
+    "a": ("a-00", "b-00"),  # a-06 connects to b-00
+    "b": ("b-00", "c-00"),  # b-09 connects to c-00
+    "c": ("c-00", "d-00"),  # c-09 connects to d-00
+    "d": ("d-00", "e-00b"),  # d-11 connects to e-00b
+    "e": ("e-00b", "f-00"),  # e-13 connects to f-00
+    "f": ("f-00", "g-00"),  # f-11 connects to g-00
     "g": ("g-00", "g-03"),  # g-03 is the final exit
 }
-SUBLEVEL_PATH_CACHE_7A: Dict[str, List[List["RoomConnection"]]] = {}
+SUBLEVEL_ROOM_PATH_CACHE_7A: Dict[str, List[List[RoomConnection]]] = {}
 
 
 def buildConnectionGraphForLevel(
@@ -177,7 +145,7 @@ def findAllPaths(
         ValueError: Raised if path through a room without a valid path is found.
 
     Returns:
-        List[Any]: A list containing all paths (as lists of rooms and regions) between source and destination.
+        List[List[CelestePathRegionNode]]: A list containing all paths (as lists of regions) between source and destination.
     """
 
     if level.rooms is None or len(level.rooms) == 0:
@@ -220,6 +188,36 @@ def findAllPaths(
         destinationRegionName,
     )
 
+    return findRegionPathsBetweenRooms(
+        level,
+        sourceRegionName,
+        destinationRegionName,
+        destinationRoom,
+        roomConnectionPaths,
+    )
+
+
+def findRegionPathsBetweenRooms(
+    level: Level,
+    sourceRegionName: str,
+    destinationRegionName: str,
+    destinationRoom: Room,
+    roomConnectionPaths: List[List[RoomConnection]],
+) -> List[List[CelestePathRegionNode]]:
+    """Finds all the paths through a Celeste Level between two rooms as a series of regions.
+
+    Args:
+        level (Level): Search within this level.
+        sourceRegionName (str): Start at this region in first Room Connection.
+        destinationRoom (str): End at this room.
+        roomConnectionPaths (List[List[RoomConnection]]): A list of room connection lists which define room-based paths through the level.
+
+    Raises:
+        ValueError: Raised if path through a room without a valid path is found.
+
+    Returns:
+        List[List[CelestePathRegionNode]]: A list containing all paths (as lists of regions) between source and destination.
+    """
     allRegionPaths: List[List[CelestePathRegionNode]] = []
 
     for roomConnPath in roomConnectionPaths:
@@ -417,7 +415,7 @@ def findRoomPathsBetweenRooms(
         destinationRegionName (str): End at this region in the destination room.
 
     Returns:
-        List[List[RoomConnection]]: A set of lists, each list representing one possible path from Source to Destination.
+        List[List[RoomConnection]]: A set of lists, each list representing one possible path through Rooms from Source to Destination.
     """
 
     if sourceRoomName == destinationRoomName:
@@ -426,6 +424,7 @@ def findRoomPathsBetweenRooms(
     # These get calculated for every location, so cache what we can
     roomConnectionsGraph = getConnectionGraphForLevel(level)
 
+    potentialRoomPaths: List[List[RoomConnection]]
     if level.name == "7a":
         # Because 7a is a special baby boy WITH TOO MANY DAMN ROOMS
         potentialRoomPaths = list(
@@ -451,7 +450,7 @@ def findRoomPathsBetweenRooms(
     for roomPath in potentialRoomPaths:
         pathIsValid = True
 
-        # All rooms from start to n - 1
+        # All room connections from start will validate all rooms except the destination room
         for index, connection in enumerate(roomPath):
             if index == 0:
                 pathSourceRegionName = sourceRegionName
@@ -477,13 +476,17 @@ def findRoomPathsBetweenRooms(
 
         # Destination room
         finalConnection = roomPath[-1]
-        regionPaths = getRegionPathsThroughRoom(
+        finalRegionPaths = getRegionPathsThroughRoom(
             level,
             finalConnection.dest_room,
             finalConnection.dest_door,
             destinationRegionName,
         )
-        if not pathIsValid:
+        if (
+            # We found no paths and we're not already in our target region
+            len(finalRegionPaths) == 0
+            and finalConnection.dest_door != destinationRegionName
+        ):
             DebugLogger.logDebugVerbose(
                 f"Found invalid path from Room {sourceRoomName} -> {sourceRegionName} to Room {destinationRoomName} -> {destinationRegionName}. No route through Room ${finalConnection.dest_room} from {finalConnection.dest_door} to {destinationRegionName}."
             )
@@ -495,10 +498,10 @@ def findRoomPathsBetweenRooms(
 
 
 def findRoomPathsThrough7a(
-    graph: Dict[str, List["RoomConnection"]],
+    graph: Dict[str, List[RoomConnection]],
     destinationRoomName: str,
     maxRoomVisits: int = 2,
-) -> Iterator[List["RoomConnection"]]:
+) -> Iterator[List[RoomConnection]]:
     """
     Compute all valid room paths through 7a from sublevel 'a' up to the sublevel
     containing the destinationRoomName. Each sublevel is traversed independently.
@@ -522,14 +525,14 @@ def findRoomPathsThrough7a(
         if s == destSublevel:
             break
 
-    pathsSoFar: List[List["RoomConnection"]] = [[]]
+    pathsSoFar: List[List[RoomConnection]] = [[]]
 
     for sublevel in sublevelsToTraverse:
         entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevel]
         # If this is the sublevel containing the destination room, end there
         sublevelDestRoom = destinationRoomName if sublevel == destSublevel else exitRoom
 
-        newPaths: List[List["RoomConnection"]] = []
+        newPaths: List[List[RoomConnection]] = []
         for pathPrefix in pathsSoFar:
             for subPath in findRoomPathsWithin7aSublevel(
                 graph, entryRoom, sublevelDestRoom, sublevel, maxRoomVisits
@@ -574,16 +577,16 @@ def findRoomPathsWithin7aSublevel(
         sourceRoomName == entryRoom and destinationRoomName == exitRoom
     )
 
-    if computeFullSublevel and sublevelLetter in SUBLEVEL_PATH_CACHE_7A:
-        for path in SUBLEVEL_PATH_CACHE_7A[sublevelLetter]:
+    if computeFullSublevel and sublevelLetter in SUBLEVEL_ROOM_PATH_CACHE_7A:
+        for path in SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelLetter]:
             yield path
         return
 
     # DFS stack: (currentRoom, pathSoFar, roomVisitCounts)
-    stack: List[Tuple[str, List["RoomConnection"], Dict[str, int]]] = [
+    stack: List[Tuple[str, List[RoomConnection], Dict[str, int]]] = [
         (sourceRoomName, [], defaultdict(int))
     ]
-    pathsFound: List[List["RoomConnection"]] = []
+    pathsFound: List[List[RoomConnection]] = []
 
     while stack:
         currentRoom, pathSoFar, roomVisitCounts = stack.pop()
@@ -603,14 +606,18 @@ def findRoomPathsWithin7aSublevel(
         for conn in graph.get(currentRoom, []):
             nextRoom = conn.dest_room
             # Enforce sublevel boundary: can't leave the current sublevel
-            if not nextRoom.startswith(sublevelLetter + "-"):
+            # EXCEPT to enter the first room of the next sublevel
+            if (
+                not nextRoom.startswith(sublevelLetter + "-")
+                and not nextRoom == exitRoom
+            ):
                 continue
             newVisitCounts = roomVisitCounts.copy()
             stack.append((nextRoom, pathSoFar + [conn], newVisitCounts))
 
     # Cache full sublevel paths
     if computeFullSublevel:
-        SUBLEVEL_PATH_CACHE_7A[sublevelLetter] = pathsFound
+        SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelLetter] = pathsFound
 
 
 def getConnectionGraphForLevel(level: Level) -> defaultdict[str, list[RoomConnection]]:
@@ -627,27 +634,6 @@ def getLevel(levelData: CelesteLevelData, levelName: str) -> Level:
         LEVEL_CACHE[levelName] = level
 
     return level
-
-
-def getMaxPathLengthForLevel(levelName: str) -> int:
-    """Defines the maximum allowed room path length by level (for algorithm path explosion pruning)
-
-    Args:
-        levelName (str): Celeste level name as defined in code (1a, 2b, etc)
-
-    Returns:
-        int: The max allowed room path length for that level.
-    """
-    base = CELESTE_LEVEL_MAX_PATH_LENGTHS.get(levelName)
-
-    if base is None:
-        # Fallback for unexpected levels
-        return 250
-
-    return max(
-        MIN_MAX_PATH_LENGTH,
-        int(base * ROOM_PATH_LENGTH_BUFFER_MULTIPLIER),
-    )
 
 
 def getReachableRoomsForDestination(level: Level, destinationRoomName: str) -> set[str]:
@@ -688,7 +674,7 @@ def getRegionPathsThroughRoom(
         ROOM_CONNECTION_PATH_CACHE.get(roomPathCacheKey)
     )
     if regionPathsThroughRoom is None:
-        currRoom = next(room for room in level.rooms if room.name == roomName)
+        currRoom = getRoom(level, roomName)
 
         regionPathsThroughRoom = findRegionPathsThroughRoom(
             currRoom, sourceRegionName, targetRegionName
@@ -801,43 +787,17 @@ rawCelesteLocationData = readCelesteLocationData()
 locations = rawCelesteLocationData.locations
 
 # [TEST/DEBUG] Leave for testing/debugging purposes
-# locations = list(
-#     location
-#     for location in rawCelesteLocationData.locations
-#     if location.level_name == "7a"
-#     and location.room_name == "c-06b"
-#     and location.region_name == "west"
-# )
+locations = list(
+    location
+    for location in rawCelesteLocationData.locations
+    if location.level_name == "7a"
+    and location.room_name == "f-08c"
+    and location.region_name == "east"
+)
 
-# Reflection A Level Clear is missing region paths (crystal heart might be wrong in the same way)
-"""
-{
-    "level_name": "6a",
-    "level_display_name": "Reflection A",
-    "room_name": "after-01",
-    "region_name": "goal",
-    "location_name": "clear",
-    "location_display_name": "Level Clear",
-    "location_type": "level_clear",
-    "location_rule": [],
-    "region_paths_to_location": []
-}
-"""
-
-# Summit A c-06b (strawberry side dream block columns) is missing region paths - minimally needs dream blocks
-"""
-{
-    "level_name": "7a",
-    "level_display_name": "The Summit A",
-    "room_name": "c-06b",
-    "region_name": "west",
-    "location_name": "strawberry",
-    "location_display_name": "Strawberry",
-    "location_type": "strawberry",
-    "location_rule": [],
-    "region_paths_to_location": []
-},
-"""
+# Known logic issues:
+# Strawberries: Summit e-05, e-09, e-11, e-13, f-08c, f-11 1&2, g-01 2&3, Level Clear
+#   All missing region_paths_to_location
 
 startTime = time.perf_counter()
 lastCheckpointTime = startTime
@@ -852,35 +812,26 @@ for index, location in enumerate(locations):
         location.region_name,
     )
 
-    # Convert paths into lists of minmal nodes, and then flatten those nodes into singular data structures.
-    regionNodePaths: List[List[CelesteLocationCheckPathRegion]] = []
+    # Convert paths into lists of flattened name and rule strings composed into singular data structures.
+    regionPathsToLocation = []
     for path in paths:
-        convertedPath: List[CelesteLocationCheckPathRegion] = []
-        for i in range(len(path) - 1):
-            currentRegion = path[i]
-            nextRegion = path[i + 1]
-            node = CelesteLocationCheckPathRegion.fromCelesteRegionPathNode(
-                currentRegion, nextRegion
-            )
-            convertedPath.append(node)
+        regionNames: list[str] = []
+        rulesToNext: list[list[list[str]]] = []
 
-        finalNode = CelesteLocationCheckPathRegion.fromCelesteRegionPathNode(path[-1])
-        convertedPath.append(finalNode)
+        lastIndex = len(path) - 1
+        for i, currentRegion in enumerate(path):
+            regionNames.append(currentRegion.regionKey)
 
-        regionNodePaths.append(convertedPath)
+            if i + 1 < len(path):
+                nextRegion = path[i + 1]
+                if currentRegion.room_name == nextRegion.room_name:
+                    rule = currentRegion.region.ruleByDest.get(
+                        nextRegion.region.name, []
+                    )
+                    if rule:
+                        rulesToNext.append(rule)
 
-    # Flatten to a smaller data structure, removing empty lists to save space
-    regionPathsToLocation: List[CelesteLocationCheckPath] = []
-    for regionPath in regionNodePaths:
-        minimalLocationPath = CelesteLocationCheckPath(
-            list(regionPath.region_name for regionPath in regionPath),
-            list(
-                regionPath.rule_to_next
-                for regionPath in regionPath
-                if len(regionPath.rule_to_next) > 0
-            ),
-        )
-        regionPathsToLocation.append(minimalLocationPath)
+        regionPathsToLocation.append(CelesteLocationCheckPath(regionNames, rulesToNext))
 
     location.region_paths_to_location = regionPathsToLocation
 
