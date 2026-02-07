@@ -5,10 +5,7 @@ Generates logical pathways through a Celeste level for every location contained 
 from collections import defaultdict, deque
 from classes.DebugLogger import DebugLogger
 from classes.MissingDataException import MissingDataException
-from data.CelesteLocationData import (
-    CelesteLocationCheckPath,
-    CelestePathRegionNode,
-)
+from data.CelesteLocationData import CelesteLocationCheckPath
 from data.celeste_data_file_reader import readCelesteLevelData, readCelesteLocationData
 from data.CelesteLevelData import CelesteLevelData, Level, Region, Room, RoomConnection
 from typing import Any, Dict, Iterator, List, Optional, Tuple, TypeVar
@@ -39,6 +36,13 @@ CELESTE_LEVEL_CONSTANTS = {
     "6b": {"source_room": "a-00", "source_region": "bottom"},
     "6c": {"source_room": "00", "source_region": "west"},
     "7a": {"source_room": "a-00", "source_region": "west"},
+    "7aa": {"source_room": "a-00", "source_region": "west"},
+    "7ab": {"source_room": "b-00", "source_region": "bottom"},
+    "7ac": {"source_room": "c-00", "source_region": "west"},
+    "7ad": {"source_room": "d-00", "source_region": "bottom"},
+    "7ae": {"source_room": "e-00b", "source_region": "bottom"},
+    "7af": {"source_room": "f-00", "source_region": "south"},
+    "7ag": {"source_room": "g-00", "source_region": "bottom"},
     "7b": {"source_room": "a-00", "source_region": "west"},
     "7c": {"source_room": "01", "source_region": "west"},
     "8a": {"source_room": "outside", "source_region": "east"},
@@ -54,11 +58,12 @@ CELESTE_LEVEL_CONSTANTS = {
 LEVEL_CACHE = {}
 ROOM_CACHE = {}
 
-# Caches to help DFS move more quickly
+# DFS helpers
+MAX_ROOM_VISITS = 2
 REACHABLE_ROOMS_CACHE: dict[tuple[str, str], set[str]] = {}
 REVERSE_ROOM_GRAPH_CACHE: dict[str, defaultdict[str, list[str]]] = {}
 ROOM_CONNECTION_GRAPH_CACHE: dict[str, defaultdict[str, list[RoomConnection]]] = {}
-ROOM_CONNECTION_PATH_CACHE = {}
+ROOM_REGION_PATH_CACHE = {}
 SUBLEVEL_ENTRY_EXIT_7A: Dict[str, Tuple[str, str]] = {
     "a": ("a-00", "b-00"),  # a-06 connects to b-00
     "b": ("b-00", "c-00"),  # b-09 connects to c-00
@@ -130,7 +135,7 @@ def findAllPaths(
     sourceRegionName: str,
     destinationRoomName: str,
     destinationRegionName: str,
-) -> List[List[CelestePathRegionNode]]:
+) -> List[CelesteLocationCheckPath]:
     """Finds all the paths through a Celeste Level between two rooms as a series of regions.
 
     Args:
@@ -180,7 +185,7 @@ def findAllPaths(
     DebugLogger.logDebugVerbose(
         f"Finding paths from Room {sourceRoomName} -> {sourceRegionName} to Room {destinationRoomName} -> {destinationRegionName}."
     )
-    roomConnectionPaths = findRoomPathsBetweenRooms(
+    roomConnectionPaths = findFullRoomPaths(
         level,
         sourceRoomName,
         sourceRegionName,
@@ -188,7 +193,7 @@ def findAllPaths(
         destinationRegionName,
     )
 
-    return findRegionPathsBetweenRooms(
+    return findFullRegionPaths(
         level,
         sourceRegionName,
         destinationRegionName,
@@ -197,13 +202,13 @@ def findAllPaths(
     )
 
 
-def findRegionPathsBetweenRooms(
+def findFullRegionPaths(
     level: Level,
     sourceRegionName: str,
     destinationRegionName: str,
     destinationRoom: Room,
     roomConnectionPaths: List[List[RoomConnection]],
-) -> List[List[CelestePathRegionNode]]:
+) -> List[CelesteLocationCheckPath]:
     """Finds all the paths through a Celeste Level between two rooms as a series of regions.
 
     Args:
@@ -218,10 +223,11 @@ def findRegionPathsBetweenRooms(
     Returns:
         List[List[CelestePathRegionNode]]: A list containing all paths (as lists of regions) between source and destination.
     """
-    allRegionPaths: List[List[CelestePathRegionNode]] = []
+
+    allLocationPaths: List[CelesteLocationCheckPath] = []
 
     for roomConnPath in roomConnectionPaths:
-        fullRegionPaths: List[List[CelestePathRegionNode]] = []
+        fullLocationPaths: List[CelesteLocationCheckPath] = []
 
         # Find paths within all rooms between source and destination
         for index, roomConn in enumerate(roomConnPath):
@@ -233,6 +239,9 @@ def findRegionPathsBetweenRooms(
                 else sourceRegionName
             )
             currTargetRegionName = roomConn.source_door
+            if currSourceRegionName == currTargetRegionName:
+                # If we're already at our current destination, don't waste time calculating anything.
+                continue
 
             regionPathsThroughRoom = getRegionPathsThroughRoom(
                 level,
@@ -240,19 +249,20 @@ def findRegionPathsBetweenRooms(
                 currSourceRegionName,
                 currTargetRegionName,
             )
-            regionNodePathsThroughRoom = _convertRegionPathsToRegionNodesWithinRoom(
-                regionPathsThroughRoom, roomConn.source_room
-            )
 
+            # These SHOULD get thrown out during the room pathfinding. This is just a sanity check.
             if len(regionPathsThroughRoom) == 0:
-                # These SHOULD get thrown out during the room pathfinding.
                 raise ValueError(
                     f"Failed to find path through room: {getRegionPathsCacheKey(level, roomConn.source_room, currSourceRegionName, currTargetRegionName)}"
                 )
 
+            roomLocationPaths = _convertRegionPathsToLocationCheckPathsWithinRoom(
+                regionPathsThroughRoom, roomConn.source_room
+            )
+
             # Nasty combinatorial
-            fullRegionPaths = _combineRegionNodePaths(
-                fullRegionPaths, regionNodePathsThroughRoom
+            fullLocationPaths = _combineLocationCheckPaths(
+                fullLocationPaths, roomLocationPaths
             )
 
         # Find paths from destination room entry door to final region (so long as we actually need to)
@@ -266,19 +276,19 @@ def findRegionPathsBetweenRooms(
                 finalSourceRegionName,
                 destinationRegionName,
             )
-            destinationRegionNodesPathsThroughRoom = (
-                _convertRegionPathsToRegionNodesWithinRoom(
+            destinationLocationPaths = (
+                _convertRegionPathsToLocationCheckPathsWithinRoom(
                     destinationRegionPaths, destinationRoom.name
                 )
             )
 
-            fullRegionPaths = _combineRegionNodePaths(
-                fullRegionPaths, destinationRegionNodesPathsThroughRoom
+            fullLocationPaths = _combineLocationCheckPaths(
+                fullLocationPaths, destinationLocationPaths
             )
 
-        allRegionPaths.extend(fullRegionPaths)
+        allLocationPaths.extend(fullLocationPaths)
 
-    return allRegionPaths
+    return allLocationPaths
 
 
 def findRegionPathsThroughRoom(
@@ -344,33 +354,42 @@ def findRegionPathsThroughRoom(
     return paths
 
 
-def findRoomPathsFromRoomConnections(
+def findRoomConnectionPaths(
+    level: Level,
     graph: Dict[str, List[RoomConnection]],
-    reachableRoomsForDestination: set[str],
     sourceRoomName: str,
+    sourceRegionName: str,
     destinationRoomName: str,
-    maxRoomVisits: int = 2,  # optional: limit re-entries into the same room
-) -> Iterator[List[RoomConnection]]:
+    destinationRegionName: str = "",
+) -> List[List[RoomConnection]]:
     """Find all paths from sourceRoomName to destinationRoomName using DFS.
-    Optimized with destination reachability and max room visits.
-    Rooms may be revisited up to maxRoomVisits times via different connections.
+
+    Rooms may be revisited up to MAX_ROOM_VISITS times via different connections.
 
     Args:
+        level (Level): Current level
         graph (Dict[str, List[RoomConnection]]): Maps room names to outgoing RoomConnections.
-        reachableRoomsForDestination (set[str]): The set of rooms which can possibly reach the destination.
         sourceRoomName (str): Start room.
+        sourceRegionName (str): Start region.
         destinationRoomName (str): Destination room.
-        maxRoomVisits (int): How many times a room may be visited in the same path.
+        destinationRegionName (str): Destination region in final room.
 
-    Yields:
-        List[RoomConnection]: A path from source to destination.
+    Returns:
+        List[List[RoomConnection]]: A path from source to destination.
     """
+    if sourceRoomName == destinationRoomName:
+        return []
+
+    roomsWhichCanReachDestination = getReachableRoomsForDestination(
+        level, destinationRoomName
+    )
 
     # DFS stack: (currentRoom, pathSoFar, roomVisitCounts)
     stack: list[tuple[str, list[RoomConnection], dict[str, int]]] = [
         (sourceRoomName, [], defaultdict(int))
     ]
 
+    result = []
     while stack:
         currentRoom, pathSoFar, roomVisitCounts = stack.pop()
 
@@ -378,138 +397,84 @@ def findRoomPathsFromRoomConnections(
         roomVisitCounts[currentRoom] += 1
 
         # Enforce max room visits
-        if roomVisitCounts[currentRoom] > maxRoomVisits:
+        if roomVisitCounts[currentRoom] > MAX_ROOM_VISITS:
             continue
 
         # Stop if this room cannot reach destination
-        if currentRoom not in reachableRoomsForDestination:
+        if currentRoom not in roomsWhichCanReachDestination:
             continue
 
         # Yield path if we've reached the destination
         if currentRoom == destinationRoomName:
-            yield pathSoFar
-            # Keep searching for alternative paths
+            if destinationRegionName == "":
+                result.append(pathSoFar)
+            else:
+                finalSourceRegionName = pathSoFar[-1].dest_door
+                if (
+                    finalSourceRegionName == destinationRegionName
+                    or hasValidRegionPathToDestination(
+                        level, currentRoom, finalSourceRegionName, destinationRegionName
+                    )
+                ):
+                    result.append(pathSoFar)
+
+            # Avoid a "continue" statement here since we may have to pass through a destination
+            # room and later return via a differnet connection.
 
         for conn in graph.get(currentRoom, []):
             nextRoom = conn.dest_room
-            # Copy visit counts for each path extension
-            newVisitCounts = roomVisitCounts.copy()
-            stack.append((nextRoom, pathSoFar + [conn], newVisitCounts))
+
+            # If we can, validate that the room can be traversed to the connection via its regions.
+            # This gets cached, so re-using it later is memory expensive, not compute expensive.
+            currSourceRegionName: str
+            if len(pathSoFar) > 0:
+                currSourceRegionName = pathSoFar[-1].dest_door
+            else:
+                currSourceRegionName = sourceRegionName
+
+            if hasValidRegionPathToDestination(
+                level, currentRoom, currSourceRegionName, conn.source_door
+            ):
+                # Copy visit counts for each path extension
+                stack.append((nextRoom, pathSoFar + [conn], roomVisitCounts.copy()))
+            else:
+                # Calling this out deliberately. Ignore if no valid region paths exist.
+                pass
+
+    return result
 
 
-def findRoomPathsBetweenRooms(
-    level: Level,
-    sourceRoomName: str,
-    sourceRegionName: str,
-    destinationRoomName: str,
-    destinationRegionName: str,
-) -> List[List[RoomConnection]]:
-    """Find a list of all room paths through a Celeste Level between two rooms.
-    Validates the room paths along the way to ensure each room has a valid internal path to the next in the list.
+def hasValidRegionPathToDestination(
+    level: Level, roomName: str, sourceRegion: str, destinationRegion: str
+) -> bool:
+    """Determines whether or not a region path through a particular room exists.
 
     Args:
-        level (Level): Search within this level.
-        sourceRoomName (str): Start at this room.
-        sourceRegionName (str): Start at this region in the source room.
-        destinationRoomName (str): End at this room.
-        destinationRegionName (str): End at this region in the destination room.
+        level (Level): Current Level
+        roomName (str): Current Room
+        sourceRegion (str): Start from this region
+        destinationRegion (str): End at this region
 
     Returns:
-        List[List[RoomConnection]]: A set of lists, each list representing one possible path through Rooms from Source to Destination.
+        bool: True, if a region path exists. False otherwise.
     """
-
-    if sourceRoomName == destinationRoomName:
-        return []  # Note: This is incorrect if we ever need to loop back to the origin. I don't believe this happens.
-
-    # These get calculated for every location, so cache what we can
-    roomConnectionsGraph = getConnectionGraphForLevel(level)
-
-    potentialRoomPaths: List[List[RoomConnection]]
-    if level.name == "7a":
-        # Because 7a is a special baby boy WITH TOO MANY DAMN ROOMS
-        potentialRoomPaths = list(
-            findRoomPathsThrough7a(roomConnectionsGraph, destinationRoomName)
-        )
-    else:
-        reachableRoomsForDestination = getReachableRoomsForDestination(
-            level, destinationRoomName
-        )
-
-        potentialRoomPaths = list(
-            findRoomPathsFromRoomConnections(
-                roomConnectionsGraph,
-                reachableRoomsForDestination,
-                sourceRoomName,
-                destinationRoomName,
-            )
-        )
-
-    # Validate that each pair of connections represents a room that can actually be traversed.
-    # Throw out any invalid paths.
-    validRoomPaths = []
-    for roomPath in potentialRoomPaths:
-        pathIsValid = True
-
-        # All room connections from start will validate all rooms except the destination room
-        for index, connection in enumerate(roomPath):
-            if index == 0:
-                pathSourceRegionName = sourceRegionName
-            else:
-                pathSourceRegionName = roomPath[index - 1].dest_door
-
-            regionPaths = getRegionPathsThroughRoom(
-                level,
-                connection.source_room,
-                pathSourceRegionName,
-                connection.source_door,
-            )
-
-            pathIsValid = len(regionPaths) > 0
-            if not pathIsValid:
-                DebugLogger.logDebugVerbose(
-                    f"Found invalid path from Room {sourceRoomName} -> {sourceRegionName} to Room {destinationRoomName} -> {destinationRegionName}. No route through Room {connection.source_room} from {pathSourceRegionName} to {connection.source_door}."
-                )
-                break
-
-        if not pathIsValid:
-            continue
-
-        # Destination room
-        finalConnection = roomPath[-1]
-        finalRegionPaths = getRegionPathsThroughRoom(
-            level,
-            finalConnection.dest_room,
-            finalConnection.dest_door,
-            destinationRegionName,
-        )
-        if (
-            # We found no paths and we're not already in our target region
-            len(finalRegionPaths) == 0
-            and finalConnection.dest_door != destinationRegionName
-        ):
-            DebugLogger.logDebugVerbose(
-                f"Found invalid path from Room {sourceRoomName} -> {sourceRegionName} to Room {destinationRoomName} -> {destinationRegionName}. No route through Room ${finalConnection.dest_room} from {finalConnection.dest_door} to {destinationRegionName}."
-            )
-            continue
-
-        validRoomPaths.append(roomPath)
-
-    return validRoomPaths
+    return (
+        len(getRegionPathsThroughRoom(level, roomName, sourceRegion, destinationRegion))
+        > 0
+    )
 
 
-def findRoomPathsThrough7a(
-    graph: Dict[str, List[RoomConnection]],
-    destinationRoomName: str,
-    maxRoomVisits: int = 2,
-) -> Iterator[List[RoomConnection]]:
+def findRoomConnectionPaths7a(
+    level: Level, graph: Dict[str, List[RoomConnection]], destinationRoomName: str
+) -> List[List[RoomConnection]]:
     """
     Compute all valid room paths through 7a from sublevel 'a' up to the sublevel
     containing the destinationRoomName. Each sublevel is traversed independently.
 
     Args:
+        level (Level): Current Level
         graph: Full room graph for level 7a
         destinationRoomName: Stop traversal at the sublevel containing this room
-        maxRoomVisits: Max room visits for each DFS
 
     Yields:
         List[RoomConnection]: Full path from 7a start to destinationRoomName
@@ -525,33 +490,37 @@ def findRoomPathsThrough7a(
         if s == destSublevel:
             break
 
-    pathsSoFar: List[List[RoomConnection]] = [[]]
+    allPaths: List[List[RoomConnection]] = [[]]
 
-    for sublevel in sublevelsToTraverse:
-        entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevel]
+    for sublevelId in sublevelsToTraverse:
         # If this is the sublevel containing the destination room, end there
-        sublevelDestRoom = destinationRoomName if sublevel == destSublevel else exitRoom
+        sublevelSourceRoom, sublevelExitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevelId]
+        sublevelDestRoom = (
+            destinationRoomName if sublevelId == destSublevel else sublevelExitRoom
+        )
 
         newPaths: List[List[RoomConnection]] = []
-        for pathPrefix in pathsSoFar:
+        sublevelGraph = {
+            k: v for k, v in graph.items() if k.startswith(sublevelId)
+        }  # Only inform the sublevel algorithm about its own rooms
+        for pathPrefix in allPaths:
             for subPath in findRoomPathsWithin7aSublevel(
-                graph, entryRoom, sublevelDestRoom, sublevel, maxRoomVisits
+                level, sublevelGraph, sublevelSourceRoom, sublevelDestRoom, sublevelId
             ):
                 newPaths.append(pathPrefix + subPath)
 
-        pathsSoFar = newPaths
+        allPaths = newPaths
 
-    for fullPath in pathsSoFar:
-        yield fullPath
+    return allPaths
 
 
 def findRoomPathsWithin7aSublevel(
+    level: Level,
     graph: Dict[str, List[RoomConnection]],
     sourceRoomName: str,
     destinationRoomName: str,
-    sublevelLetter: str,
-    maxRoomVisits: int = 2,
-) -> Iterator[List[RoomConnection]]:
+    sublevelId: str,
+) -> List[List[RoomConnection]]:
     """
     Find all room paths within a 7a sublevel between two rooms.
 
@@ -561,63 +530,78 @@ def findRoomPathsWithin7aSublevel(
     - Cached paths per sublevel
 
     Args:
+        level (Level): Current Level
         graph (Dict[str, List[RoomConnection]]): Forward graph of RoomConnections
         sourceRoomName (str): Start room within the sublevel
         destinationRoomName (str): End room within the sublevel
         sublevelLetter (str): The letter of the sublevel (a-g)
-        maxRoomVisits (int): How many times a room may be revisited in a single path
 
     Yields:
         List[RoomConnection]: A valid path from sourceRoomName to destinationRoomName
     """
-
-    # If computing all paths for the entire sublevel, check cache
-    entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevelLetter]
+    entryRoom, exitRoom = SUBLEVEL_ENTRY_EXIT_7A[sublevelId]
     computeFullSublevel = (
         sourceRoomName == entryRoom and destinationRoomName == exitRoom
     )
 
-    if computeFullSublevel and sublevelLetter in SUBLEVEL_ROOM_PATH_CACHE_7A:
-        for path in SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelLetter]:
-            yield path
-        return
+    entryRegion = CELESTE_LEVEL_CONSTANTS[f"{level.name}{sublevelId}"]["source_region"]
+    if computeFullSublevel and sublevelId in SUBLEVEL_ROOM_PATH_CACHE_7A:
+        pathsFound = SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelId]
+    elif computeFullSublevel:
+        pathsFound = findRoomConnectionPaths(
+            level, graph, entryRoom, entryRegion, exitRoom
+        )
+        SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelId] = pathsFound
+    else:
+        pathsFound = findRoomConnectionPaths(
+            level, graph, entryRoom, entryRegion, destinationRoomName
+        )
 
-    # DFS stack: (currentRoom, pathSoFar, roomVisitCounts)
-    stack: List[Tuple[str, List[RoomConnection], Dict[str, int]]] = [
-        (sourceRoomName, [], defaultdict(int))
-    ]
-    pathsFound: List[List[RoomConnection]] = []
+    return pathsFound
 
-    while stack:
-        currentRoom, pathSoFar, roomVisitCounts = stack.pop()
 
-        # Increment visit count
-        roomVisitCounts[currentRoom] += 1
-        if roomVisitCounts[currentRoom] > maxRoomVisits:
-            continue
+def findFullRoomPaths(
+    level: Level,
+    sourceRoomName: str,
+    sourceRegionName: str,
+    destinationRoomName: str,
+    destinationRegionName: str = "",
+) -> List[List[RoomConnection]]:
+    """Find a list of all room paths through a Celeste Level between two rooms.
 
-        # Yield path if we've reached the destination
-        if currentRoom == destinationRoomName:
-            pathsFound.append(pathSoFar)
-            yield pathSoFar
-            continue
+    Args:
+        level (Level): Search within this level.
+        sourceRoomName (str): Start at this room.
+        sourceRegionName (str): Start at this region
+        destinationRoomName (str): End at this room.
+        destinationRegionName (str): The final region destination in the final room.
 
-        # Explore outgoing connections
-        for conn in graph.get(currentRoom, []):
-            nextRoom = conn.dest_room
-            # Enforce sublevel boundary: can't leave the current sublevel
-            # EXCEPT to enter the first room of the next sublevel
-            if (
-                not nextRoom.startswith(sublevelLetter + "-")
-                and not nextRoom == exitRoom
-            ):
-                continue
-            newVisitCounts = roomVisitCounts.copy()
-            stack.append((nextRoom, pathSoFar + [conn], newVisitCounts))
+    Returns:
+        List[List[RoomConnection]]: A set of lists, each list representing one possible path through Rooms from Source to Destination.
+    """
 
-    # Cache full sublevel paths
-    if computeFullSublevel:
-        SUBLEVEL_ROOM_PATH_CACHE_7A[sublevelLetter] = pathsFound
+    if sourceRoomName == destinationRoomName:
+        return []  # Note: This is incorrect if we ever need to loop back to the origin. I don't believe this happens.
+
+    roomConnectionsGraph = getConnectionGraphForLevel(level)
+
+    potentialRoomPaths: List[List[RoomConnection]]
+    if level.name == "7a":
+        # Because 7a is a special baby boy WITH TOO MANY DAMN ROOMS
+        potentialRoomPaths = findRoomConnectionPaths7a(
+            level, roomConnectionsGraph, destinationRoomName
+        )
+    else:
+        potentialRoomPaths = findRoomConnectionPaths(
+            level,
+            roomConnectionsGraph,
+            sourceRoomName,
+            sourceRegionName,
+            destinationRoomName,
+            destinationRegionName,
+        )
+
+    return potentialRoomPaths
 
 
 def getConnectionGraphForLevel(level: Level) -> defaultdict[str, list[RoomConnection]]:
@@ -637,7 +621,7 @@ def getLevel(levelData: CelesteLevelData, levelName: str) -> Level:
 
 
 def getReachableRoomsForDestination(level: Level, destinationRoomName: str) -> set[str]:
-    """Return reachable rooms for a destination, caching by (level.name, destinationRoomName)."""
+    """Return all roomsw which can reach a destination, caching by (level.name, destinationRoomName)."""
     cacheKey = (level.name, destinationRoomName)
     if cacheKey not in REACHABLE_ROOMS_CACHE:
         reverseGraph = getReverseGraphForLevel(level)
@@ -670,8 +654,8 @@ def getRegionPathsThroughRoom(
     roomPathCacheKey = getRegionPathsCacheKey(
         level, roomName, sourceRegionName, targetRegionName
     )
-    regionPathsThroughRoom: Optional[List[List[Region]]] = (
-        ROOM_CONNECTION_PATH_CACHE.get(roomPathCacheKey)
+    regionPathsThroughRoom: Optional[List[List[Region]]] = ROOM_REGION_PATH_CACHE.get(
+        roomPathCacheKey
     )
     if regionPathsThroughRoom is None:
         currRoom = getRoom(level, roomName)
@@ -680,7 +664,7 @@ def getRegionPathsThroughRoom(
             currRoom, sourceRegionName, targetRegionName
         )
 
-        ROOM_CONNECTION_PATH_CACHE[roomPathCacheKey] = regionPathsThroughRoom
+        ROOM_REGION_PATH_CACHE[roomPathCacheKey] = regionPathsThroughRoom
 
     return regionPathsThroughRoom
 
@@ -710,55 +694,66 @@ def getRoom(level: Level, roomName: str) -> Room:
     return ROOM_CACHE[roomCacheKey]
 
 
-def _combineRegionNodePaths(
-    fullRegionPaths: List[List[CelestePathRegionNode]],
-    regionPathsThroughRoom: List[List[CelestePathRegionNode]],
-) -> List[List[CelestePathRegionNode]]:
-    """Combines accumulated region paths with all valid paths through a room.
-
-    This function builds all possible combined paths by appending each
-    path through the current room to each previously accumulated path.
-    Conceptually, this is a Cartesian product between the two inputs.
+def _combineLocationCheckPaths(
+    sourceCheckPaths: List[CelesteLocationCheckPath],
+    targetCheckPaths: List[CelesteLocationCheckPath],
+) -> List[CelesteLocationCheckPath]:
+    """Combines two location check paths. If source is empty, returns a copy of target.
+    Conceptually, this is a Cartesian product* between the two inputs.
 
     Args:
-        fullRegionPaths (List[List[RegionNode]]): The list of region paths
-            accumulated so far across previous rooms.
-        regionPathsThroughRoom (List[List[RegionNode]]): All valid region paths
-            through the current room.
+        sourceRegionPaths (List[CelesteLocationCheckPath]): The source list of location check paths.
+        targetRegionPaths (List[CelesteLocationCheckPath]): The target list of location check paths.
 
     Returns:
-        List[List[RegionNode]]: A new list of combined region paths. If
-        `fullRegionPaths` is empty, this will return a copy of
-        `regionPathsThroughRoom`. If `regionPathsThroughRoom` is empty,
-        this will return an empty list.
+        List[CelesteLocationCheckPath]: A list of combined region paths, or a copy of target, if source
+        does not exist.
     """
-    if not fullRegionPaths:
-        return [path.copy() for path in regionPathsThroughRoom]
+    if not sourceCheckPaths:
+        return targetCheckPaths
 
-    return [
-        fullPath + roomPath
-        for fullPath in fullRegionPaths
-        for roomPath in regionPathsThroughRoom
-    ]
+    combinedPaths: List[CelesteLocationCheckPath] = []
+    for sourcePath in sourceCheckPaths:
+        for targetPath in targetCheckPaths:
+            combinedPaths.append(
+                CelesteLocationCheckPath(
+                    regions=sourcePath.regions + targetPath.regions,
+                    rules=sourcePath.rules + targetPath.rules,
+                )
+            )
+
+    return combinedPaths
 
 
-def _convertRegionPathsToRegionNodesWithinRoom(
+def _convertRegionPathsToLocationCheckPathsWithinRoom(
     regionPaths: List[List[Region]],
     roomName: str,
-) -> List[List[CelestePathRegionNode]]:
-    """Converts Region Paths into Region Node Paths.
+) -> List[CelesteLocationCheckPath]:
+    """Converts Region Paths into Location Check Paths within a single room.
 
     Args:
         regionPaths (List[List[Region]]): Region Path
         roomName (str): Room in which all regions in the path reside.
 
     Returns:
-        List[List[RegionNode]]: The same list, converted to Region Nodes.
+        List[CelesteLocationCheckPath]: One CelesteLocationCheckPath per list of Regions.
     """
-    return [
-        [CelestePathRegionNode(room_name=roomName, region=region) for region in path]
-        for path in regionPaths
-    ]
+    checkPaths = []
+    for path in regionPaths:
+        regions: List[str] = []
+        rules: List[List[List[str]]] = []
+        for i, currentRegion in enumerate(path):
+            regions.append(f"{roomName}_{currentRegion.name}")
+
+            if i + 1 < len(path):
+                nextRegion = path[i + 1]
+                rule = currentRegion.ruleByDest.get(nextRegion.name, [])
+                if rule:
+                    rules.append(rule)
+
+        checkPaths.append(CelesteLocationCheckPath(regions, rules))
+
+    return checkPaths
 
 
 def _safeListGet(lst: List[T], idx: int) -> Optional[T]:
@@ -787,13 +782,13 @@ rawCelesteLocationData = readCelesteLocationData()
 locations = rawCelesteLocationData.locations
 
 # [TEST/DEBUG] Leave for testing/debugging purposes
-locations = list(
-    location
-    for location in rawCelesteLocationData.locations
-    if location.level_name == "7a"
-    and location.room_name == "f-08c"
-    and location.region_name == "east"
-)
+# locations = list(
+#     location
+#     for location in rawCelesteLocationData.locations
+#     if location.level_name == "7a"
+#     and location.room_name == "f-02b"
+#     and location.region_name == "east"
+# )
 
 # Known logic issues:
 # Strawberries: Summit e-05, e-09, e-11, e-13, f-08c, f-11 1&2, g-01 2&3, Level Clear
@@ -804,36 +799,13 @@ lastCheckpointTime = startTime
 
 for index, location in enumerate(locations):
     level = getLevel(rawCelesteLevelData, location.level_name)
-    paths: List[List[CelestePathRegionNode]] = findAllPaths(
+    location.region_paths_to_location = findAllPaths(
         level,
         CELESTE_LEVEL_CONSTANTS[level.name]["source_room"],
         CELESTE_LEVEL_CONSTANTS[level.name]["source_region"],
         location.room_name,
         location.region_name,
     )
-
-    # Convert paths into lists of flattened name and rule strings composed into singular data structures.
-    regionPathsToLocation = []
-    for path in paths:
-        regionNames: list[str] = []
-        rulesToNext: list[list[list[str]]] = []
-
-        lastIndex = len(path) - 1
-        for i, currentRegion in enumerate(path):
-            regionNames.append(currentRegion.regionKey)
-
-            if i + 1 < len(path):
-                nextRegion = path[i + 1]
-                if currentRegion.room_name == nextRegion.room_name:
-                    rule = currentRegion.region.ruleByDest.get(
-                        nextRegion.region.name, []
-                    )
-                    if rule:
-                        rulesToNext.append(rule)
-
-        regionPathsToLocation.append(CelesteLocationCheckPath(regionNames, rulesToNext))
-
-    location.region_paths_to_location = regionPathsToLocation
 
     # Progress + timing every level change
     prevLevel = _safeListGet(locations, index - 1)

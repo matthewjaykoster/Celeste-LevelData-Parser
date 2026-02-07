@@ -107,15 +107,3 @@ class CelesteLocationCheckPath:
 
     def toJsonDict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass
-class CelestePathRegionNode:
-    """A Celeste Path Region which is aware of its room."""
-
-    room_name: str
-    region: Region
-    regionKey: str = field(init=False)
-
-    def __post_init__(self):
-        self.regionKey = f"{self.room_name}-{self.region.name}"
