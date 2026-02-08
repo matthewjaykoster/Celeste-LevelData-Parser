@@ -6,20 +6,30 @@ from typing import List
 from classes.DebugLogger import DebugLogger
 from data.CelesteLocationData import CelesteLocationCheck, CelesteLocationData
 from data.CelesteLogicData import LocationCheckLogic
-from data.celeste_data_file_reader import readCelesteLocationData
+from data.celeste_data_file_reader import readCelesteLocationData, readCelesteLogicData
 from data.celeste_data_file_writer import writeLogicToJsonDataFile
 from scripts.generate_location_paths import generateLocationChecks
 
+GENERAL_LUA_KEYCODE_MAP = {
+    "Gem 1": "thesummita-gem1",
+    "Gem 2": "thesummita-gem2",
+    "Gem 3": "thesummita-gem3",
+    "Gem 4": "thesummita-gem4",
+    "Gem 5": "thesummita-gem5",
+    "Gem 6": "thesummita-gem6",
+}
 KEYSANITY_DISABLED_RULE = "$KEYSANITY_IS_DISABLED"
 KEY_TO_LUA_KEYCODE_MAP = {
     "Front Door Key": "celestialresorta-frontdoorkey",
     "Hallway Key 1": "celestialresorta-hallwaykey1",
     "Hallway Key 2": "celestialresorta-hallwaykey2",
     "Huge Mess Key": "celestialresorta-hugemesskey",
+    "Presidential Suite Key": "celestialresorta-presidentialsuitekey",
     "Entrance Key": "mirrortemplea-entrancekey",
     "Depths Key": "mirrortemplea-depthskey",
     "Search Key 1": "mirrortemplea-searchkey1",
     "Search Key 2": "mirrortemplea-searchkey2",
+    "Search Key 3": "mirrortemplea-searchkey3",
     "Central Chamber Key 1": "mirrortempleb-centralchamberkey1",
     "Central Chamber Key 2": "mirrortempleb-centralchamberkey2",
     "2500 M Key": "thesummita-2500mkey",
@@ -28,6 +38,11 @@ KEY_TO_LUA_KEYCODE_MAP = {
     "Power Source Key 3": "farewell-powersourcekey3",
     "Power Source Key 4": "farewell-powersourcekey4",
     "Power Source Key 5": "farewell-powersourcekey5",
+}
+IGNORE_LOGIC_RULES = {
+    "brown_clutter": True,
+    "green_clutter": True,
+    "pink_clutter": True,
 }
 
 
@@ -101,41 +116,56 @@ def handleLogicDataMapping(locations: List[CelesteLocationCheck]):
         rawCelesteLocationData (CelesteLocationData): Celeste location data loaded from the file.
     """
     for location in locations:
+        location.location_rule = remapIndividualLogicRule(location.location_rule)
         for regionPath in location.region_paths_to_location:
-            regionPath.rules = remapLogicRules(regionPath.rules)
+            regionPath.rules = remapLogicRuleSets(regionPath.rules)
 
 
-def remapLogicRules(
+def remapIndividualLogicRule(logicRule: List[List[str]]) -> List[List[str]]:
+    """
+    Remaps individual logic rules as needed.
+        Uses KEY_TO_LUA_KEYCODE_MAP to modify key names to their related lua-mapped item names.
+        Adds an OR branch for KEYSANITY being disabled when a key remap occurs.
+    """
+    newOrSet: List[List[str]] = []
+    needsKeysanityBypass = False
+
+    for andSet in logicRule:
+        newAndSet: List[str] = []
+
+        for rule in andSet:
+            if rule in IGNORE_LOGIC_RULES:
+                pass
+            elif rule in KEY_TO_LUA_KEYCODE_MAP:
+                newAndSet.append(KEY_TO_LUA_KEYCODE_MAP[rule])
+                needsKeysanityBypass = True
+            elif rule in GENERAL_LUA_KEYCODE_MAP:
+                newAndSet.append(GENERAL_LUA_KEYCODE_MAP[rule])
+            else:
+                newAndSet.append(rule)
+
+        if len(newAndSet) > 0:
+            newOrSet.append(newAndSet)
+
+    if needsKeysanityBypass:
+        newOrSet.append([KEYSANITY_DISABLED_RULE])
+
+    return newOrSet
+
+
+def remapLogicRuleSets(
     logic: List[List[List[str]]],
 ) -> List[List[List[str]]]:
     """
-    Remaps logic rules as needed.
+    Remaps sets of logic rules as needed.
         Uses KEY_TO_LUA_KEYCODE_MAP to modify key names to their related lua-mapped item names.
         Adds an OR branch for KEYSANITY being disabled when a key remap occurs.
     """
 
     remappedLogic: List[List[List[str]]] = []
 
-    for step in logic:
-        newStep: List[List[str]] = []
-        needsKeysanityBypass = False
-
-        for option in step:
-            newOption: List[str] = []
-
-            for rule in option:
-                if rule in KEY_TO_LUA_KEYCODE_MAP:
-                    newOption.append(KEY_TO_LUA_KEYCODE_MAP[rule])
-                    needsKeysanityBypass = True
-                else:
-                    newOption.append(rule)
-
-            newStep.append(newOption)
-
-        if needsKeysanityBypass:
-            newStep.append([KEYSANITY_DISABLED_RULE])
-
-        remappedLogic.append(newStep)
+    for orSet in logic:
+        remappedLogic.append(remapIndividualLogicRule(orSet))
 
     return remappedLogic
 
@@ -167,26 +197,52 @@ def violatesKeysanityRule(rule: list[str]) -> bool:
 # 4. Convert to data structure which can be saved
 # 5. Save to new JSON file - celeste_data_file_writer.writeLogicToJsonDataFile
 
-PULL_FROM_FILE = False
+DRY_RUN = True  # If true, do not write to file
+EDIT_MODE = True  # Edit existing file rather than overwrite
+LOCATION_FILTERS = {"LEVEL_NAME": "", "ROOM_NAME": "", "LOCATION_NAME": ""}
+PULL_LOCATIONS_FROM_FILE = (
+    False  # Pull locations from pre-calculated file, rather than calc on the fly
+)
 
 # 0 - Get locations
 DebugLogger.logDebug("Generating logic file.")
 locations: List[CelesteLocationCheck]
-if PULL_FROM_FILE:
+if PULL_LOCATIONS_FROM_FILE:
     DebugLogger.logDebug("Pulling locations from file.")
     rawCelesteLocationData = readCelesteLocationData()
-    locations = rawCelesteLocationData.locations
+    locations = [
+        location
+        for location in rawCelesteLocationData.locations
+        if (
+            LOCATION_FILTERS["LEVEL_NAME"] == ""
+            or LOCATION_FILTERS["LEVEL_NAME"] == location.level_name
+        )
+        and (
+            LOCATION_FILTERS["ROOM_NAME"] == ""
+            or LOCATION_FILTERS["ROOM_NAME"] == location.room_name
+        )
+        and (
+            LOCATION_FILTERS["LOCATION_NAME"] == ""
+            or LOCATION_FILTERS["LOCATION_NAME"] == location.location_name
+        )
+    ]
 else:
     DebugLogger.logDebug("Generating locations on the fly.")
-    locations = generateLocationChecks(False)
+    locations = generateLocationChecks(LOCATION_FILTERS, False)
+
+DebugLogger.logDebug(f"Processing {len(locations)} locations.")
 
 # 1 - Map rule values as needed to prep for Lua import
 DebugLogger.logDebug("Mapping logic data (needed for lua import).")
 handleLogicDataMapping(locations)
 
+DebugLogger.logDebug("Beginning location to logic conversion.")
 locationLogic: List[LocationCheckLogic] = []
 for index, location in enumerate(locations):
     allRules: List[List[str]] = []
+
+    # TODO - add some targeted editing here so I can change some JSON in-place (basically
+    # so I don't have to recalc everything when I find an issue but can target specific locations)
 
     # 2 - Collapse "rule paths" into logical ANDs and ORs, appending multiple "rule paths" using ORs
     if len(location.region_paths_to_location) > 0:
@@ -212,7 +268,38 @@ for index, location in enumerate(locations):
     )
 
     if index % 10 == 0:
-        DebugLogger.logDebug(f"Converted {index + 1} locations into logic format.")
+        DebugLogger.logDebug(f"Converted {index + 1} locations into logic.")
 
 # 5 - Write to file
-writeLogicToJsonDataFile(locationLogic)
+toWrite = locationLogic
+if EDIT_MODE:
+    # Read in locations from file
+    existingLogicData = readCelesteLogicData()
+
+    for logic in locationLogic:
+        # Find the index to replace
+        existingIndex = next(
+            (
+                i
+                for i, x in enumerate(existingLogicData.locationLogic)
+                if x.level_display_name == logic.level_display_name
+                and x.room_name == logic.room_name
+                and x.location_display_name == logic.location_display_name
+            ),
+            None,
+        )
+
+        # Replace it in the existing list or notify if not found
+        if existingIndex:
+            existingLogicData.locationLogic[existingIndex] = logic
+        else:
+            print(
+                f"No existing logic found in file for location: {logic.level_display_name}_{logic.room_name}_{logic.location_display_name}."
+            )
+
+    toWrite = existingLogicData.locationLogic
+
+if DRY_RUN:
+    print("[DRY RUN] Skipping file write.")
+else:
+    writeLogicToJsonDataFile(toWrite)

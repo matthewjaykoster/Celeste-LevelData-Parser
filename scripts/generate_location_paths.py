@@ -806,28 +806,35 @@ def _safeListGet(lst: List[T], idx: int) -> Optional[T]:
 ################
 # Script Logic #
 ################
-def generateLocationChecks(shouldSaveToFile: bool) -> List[CelesteLocationCheck]:
+def generateLocationChecks(
+    locationFilters: Dict[str, str], shouldSaveToFile: bool
+) -> List[CelesteLocationCheck]:
     SCRIPT_OPTIONS["shouldSaveToFile"] = shouldSaveToFile
     # NOTE: Close CelesteLocationData.json before running this otherwise the update will be SLOOOOOOOOW.
 
     rawCelesteLevelData = readCelesteLevelData()
     rawCelesteLocationData = readCelesteLocationData()
-    locations = rawCelesteLocationData.locations
-
-    # [TEST/DEBUG] Leave for testing/debugging purposes
-    # locations = list(
-    #     location
-    #     for location in rawCelesteLocationData.locations
-    #     if location.level_name == "1a"
-    #     and location.room_name == "5"
-    #     and location.region_name == "north-west"
-    # )
+    locations = [
+        location
+        for location in rawCelesteLocationData.locations
+        if (
+            locationFilters["LEVEL_NAME"] == ""
+            or locationFilters["LEVEL_NAME"] == location.level_name
+        )
+        and (
+            locationFilters["ROOM_NAME"] == ""
+            or locationFilters["ROOM_NAME"] == location.room_name
+        )
+        and (
+            locationFilters["LOCATION_NAME"] == ""
+            or locationFilters["LOCATION_NAME"] == location.location_name
+        )
+    ]
 
     # Known logic issues:
-    # Celestial Resort - Roof - all checks aren't respecting NOT keysantity
     # Core A - car
     # Core B - all checkpoints and level clear
-    # Summit A - all checkpoints, crystal heart has some incorrect logic (for at least non-gemsanity)
+    # Summit A - all checkpoints
 
     startTime = time.perf_counter()
     lastCheckpointTime = startTime
