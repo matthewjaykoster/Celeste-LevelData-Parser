@@ -3,18 +3,18 @@ Generates logical pathways through a Celeste level for every location contained 
 """
 
 from collections import defaultdict, deque
+import hashlib
 from classes.DebugLogger import DebugLogger
 from classes.MissingDataException import MissingDataException
-from data.CelesteLocationData import CelesteLocationCheckPath
+from data.CelesteLocationData import CelesteLocationCheck, CelesteLocationCheckPath
 from data.celeste_data_file_reader import readCelesteLevelData, readCelesteLocationData
 from data.CelesteLevelData import CelesteLevelData, Level, Region, Room, RoomConnection
 from typing import Any, Dict, Iterator, List, Optional, Tuple, TypeVar
 from data.celeste_data_file_writer import writeLocationsToJsonDataFile
 import time
 
-T = TypeVar("T")
 
-
+# Constants
 CELESTE_LEVEL_CONSTANTS = {
     "0a": {"source_room": "0", "source_region": "main"},
     "1a": {"source_room": "1", "source_region": "main"},
@@ -53,6 +53,10 @@ CELESTE_LEVEL_CONSTANTS = {
     "10b": {"source_room": "f-door", "source_region": "west"},
     "10c": {"source_room": "end-golden", "source_region": "bottom"},
 }
+T = TypeVar("T")
+
+# Globals
+SCRIPT_OPTIONS = {"shouldSaveToFile": True}
 
 # Simple in-memory JSON caches
 LEVEL_CACHE = {}
@@ -127,6 +131,22 @@ def calculateReachableRoomsForDestination(
         for prevRoom in reverseGraph.get(room, []):
             queue.append(prevRoom)
     return reachableRoomsForDestination
+
+
+def cullLogicallyEquivalentPaths(
+    paths: list[CelesteLocationCheckPath],
+) -> list[CelesteLocationCheckPath]:
+    """Remove logically equivalent CelesteLocationCheckPaths to reduce combinatorial explosion."""
+    seenFingerprints = set()
+    uniquePaths = []
+
+    for path in paths:
+        fp = getCullFingerPrint(path)
+        if fp not in seenFingerprints:
+            seenFingerprints.add(fp)
+            uniquePaths.append(path)
+
+    return uniquePaths
 
 
 def findAllPaths(
@@ -288,6 +308,11 @@ def findFullRegionPaths(
 
         allLocationPaths.extend(fullLocationPaths)
 
+        # This takes a LONG time but reduces the file size to something managable.
+        # Only do this when saving because memory can handle quite a lot.
+        if SCRIPT_OPTIONS["shouldSaveToFile"]:
+            allLocationPaths = cullLogicallyEquivalentPaths(allLocationPaths)
+
     return allLocationPaths
 
 
@@ -444,26 +469,6 @@ def findRoomConnectionPaths(
     return result
 
 
-def hasValidRegionPathToDestination(
-    level: Level, roomName: str, sourceRegion: str, destinationRegion: str
-) -> bool:
-    """Determines whether or not a region path through a particular room exists.
-
-    Args:
-        level (Level): Current Level
-        roomName (str): Current Room
-        sourceRegion (str): Start from this region
-        destinationRegion (str): End at this region
-
-    Returns:
-        bool: True, if a region path exists. False otherwise.
-    """
-    return (
-        len(getRegionPathsThroughRoom(level, roomName, sourceRegion, destinationRegion))
-        > 0
-    )
-
-
 def findRoomConnectionPaths7a(
     level: Level, graph: Dict[str, List[RoomConnection]], destinationRoomName: str
 ) -> List[List[RoomConnection]]:
@@ -611,6 +616,13 @@ def getConnectionGraphForLevel(level: Level) -> defaultdict[str, list[RoomConnec
     return ROOM_CONNECTION_GRAPH_CACHE[level.name]
 
 
+def getCullFingerPrint(path: CelesteLocationCheckPath) -> str:
+    """Generate a unique hash for a CelesteLocationCheckPath for deduplication."""
+    # Flatten rules into a single string (or JSON string) for hashing
+    rules_str = str(path.rules)
+    return hashlib.md5(rules_str.encode("utf-8")).hexdigest()
+
+
 def getLevel(levelData: CelesteLevelData, levelName: str) -> Level:
     level = LEVEL_CACHE.get(levelName)
     if level is None:
@@ -694,6 +706,26 @@ def getRoom(level: Level, roomName: str) -> Room:
     return ROOM_CACHE[roomCacheKey]
 
 
+def hasValidRegionPathToDestination(
+    level: Level, roomName: str, sourceRegion: str, destinationRegion: str
+) -> bool:
+    """Determines whether or not a region path through a particular room exists.
+
+    Args:
+        level (Level): Current Level
+        roomName (str): Current Room
+        sourceRegion (str): Start from this region
+        destinationRegion (str): End at this region
+
+    Returns:
+        bool: True, if a region path exists. False otherwise.
+    """
+    return (
+        len(getRegionPathsThroughRoom(level, roomName, sourceRegion, destinationRegion))
+        > 0
+    )
+
+
 def _combineLocationCheckPaths(
     sourceCheckPaths: List[CelesteLocationCheckPath],
     targetCheckPaths: List[CelesteLocationCheckPath],
@@ -774,60 +806,73 @@ def _safeListGet(lst: List[T], idx: int) -> Optional[T]:
 ################
 # Script Logic #
 ################
+def generateLocationChecks(shouldSaveToFile: bool) -> List[CelesteLocationCheck]:
+    SCRIPT_OPTIONS["shouldSaveToFile"] = shouldSaveToFile
+    # NOTE: Close CelesteLocationData.json before running this otherwise the update will be SLOOOOOOOOW.
 
-# NOTE: Close CelesteLocationData.json before running this otherwise the update will be SLOOOOOOOOW.
+    rawCelesteLevelData = readCelesteLevelData()
+    rawCelesteLocationData = readCelesteLocationData()
+    locations = rawCelesteLocationData.locations
 
-rawCelesteLevelData = readCelesteLevelData()
-rawCelesteLocationData = readCelesteLocationData()
-locations = rawCelesteLocationData.locations
+    # [TEST/DEBUG] Leave for testing/debugging purposes
+    # locations = list(
+    #     location
+    #     for location in rawCelesteLocationData.locations
+    #     if location.level_name == "1a"
+    #     and location.room_name == "5"
+    #     and location.region_name == "north-west"
+    # )
 
-# [TEST/DEBUG] Leave for testing/debugging purposes
-# locations = list(
-#     location
-#     for location in rawCelesteLocationData.locations
-#     if location.level_name == "7a"
-#     and location.room_name == "f-02b"
-#     and location.region_name == "east"
-# )
+    # Known logic issues:
+    # Celestial Resort - Roof - all checks aren't respecting NOT keysantity
+    # Core A - car
+    # Core B - all checkpoints and level clear
+    # Summit A - all checkpoints, crystal heart has some incorrect logic (for at least non-gemsanity)
 
-# Known logic issues:
-# Strawberries: Summit e-05, e-09, e-11, e-13, f-08c, f-11 1&2, g-01 2&3, Level Clear
-#   All missing region_paths_to_location
+    startTime = time.perf_counter()
+    lastCheckpointTime = startTime
 
-startTime = time.perf_counter()
-lastCheckpointTime = startTime
-
-for index, location in enumerate(locations):
-    level = getLevel(rawCelesteLevelData, location.level_name)
-    location.region_paths_to_location = findAllPaths(
-        level,
-        CELESTE_LEVEL_CONSTANTS[level.name]["source_room"],
-        CELESTE_LEVEL_CONSTANTS[level.name]["source_region"],
-        location.room_name,
-        location.region_name,
-    )
-
-    # Progress + timing every level change
-    prevLevel = _safeListGet(locations, index - 1)
-    if prevLevel is None:
-        DebugLogger.logDebug(f"Starting location calculations for level {level.name}.")
-    elif level.name != prevLevel.level_name:
-        now = time.perf_counter()
-        elapsedTotal = now - startTime
-        elapsedSinceLast = now - lastCheckpointTime
-        lastCheckpointTime = now
-
-        DebugLogger.logDebug(
-            f"Calculated paths for {index + 1} locations | "
-            f"+{elapsedSinceLast:.1f}s | total {elapsedTotal:.1f}s"
+    for index, location in enumerate(locations):
+        level = getLevel(rawCelesteLevelData, location.level_name)
+        locations[index].region_paths_to_location = findAllPaths(
+            level,
+            CELESTE_LEVEL_CONSTANTS[level.name]["source_room"],
+            CELESTE_LEVEL_CONSTANTS[level.name]["source_region"],
+            location.room_name,
+            location.region_name,
         )
 
-        DebugLogger.logDebug(f"Starting location calculations for level {level.name}.")
+        # Progress + timing every level change
+        prevLevel = _safeListGet(locations, index - 1)
+        if prevLevel is None:
+            DebugLogger.logDebug(
+                f"Starting location calculations for level {level.name}."
+            )
+        elif level.name != prevLevel.level_name:
+            now = time.perf_counter()
+            elapsedTotal = now - startTime
+            elapsedSinceLast = now - lastCheckpointTime
+            lastCheckpointTime = now
 
-endTime = time.perf_counter()
-DebugLogger.logDebug(
-    f"Finished path calculation for {len(locations)} locations in "
-    f"{endTime - startTime:.1f} seconds."
-)
+            DebugLogger.logDebug(
+                f"Calculated paths for {index + 1} locations | "
+                f"+{elapsedSinceLast:.1f}s | total {elapsedTotal:.1f}s"
+            )
 
-writeLocationsToJsonDataFile(locations)
+            DebugLogger.logDebug(
+                f"Starting location calculations for level {level.name}."
+            )
+
+    endTime = time.perf_counter()
+    DebugLogger.logDebug(
+        f"Finished path calculation for {len(locations)} locations in "
+        f"{endTime - startTime:.1f} seconds."
+    )
+
+    if shouldSaveToFile:
+        DebugLogger.logDebug(f"Saving {len(locations)} to disk.")
+        writeLocationsToJsonDataFile(locations)
+    else:
+        DebugLogger.logDebug(f"Skipping location file write to disk.")
+
+    return locations

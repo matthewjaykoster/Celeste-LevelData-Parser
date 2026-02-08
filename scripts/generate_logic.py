@@ -3,10 +3,12 @@ Generates logic for each pathway contained within /data/CelesteLogicData.json.
 """
 
 from typing import List
-from data.CelesteLocationData import CelesteLocationData
+from classes.DebugLogger import DebugLogger
+from data.CelesteLocationData import CelesteLocationCheck, CelesteLocationData
 from data.CelesteLogicData import LocationCheckLogic
 from data.celeste_data_file_reader import readCelesteLocationData
 from data.celeste_data_file_writer import writeLogicToJsonDataFile
+from scripts.generate_location_paths import generateLocationChecks
 
 KEYSANITY_DISABLED_RULE = "$KEYSANITY_IS_DISABLED"
 KEY_TO_LUA_KEYCODE_MAP = {
@@ -91,14 +93,14 @@ def cullRules(rules: List[List[str]]) -> List[List[str]]:
     return result
 
 
-def handleLogicDataMapping(rawCelesteLocationData: CelesteLocationData):
+def handleLogicDataMapping(locations: List[CelesteLocationCheck]):
     """Remaps any logic keys which don't match the Lua codes and adds in settings
        logic where needed. Directly edits the passed object.
 
     Args:
         rawCelesteLocationData (CelesteLocationData): Celeste location data loaded from the file.
     """
-    for location in rawCelesteLocationData.locations:
+    for location in locations:
         for regionPath in location.region_paths_to_location:
             regionPath.rules = remapLogicRules(regionPath.rules)
 
@@ -165,14 +167,25 @@ def violatesKeysanityRule(rule: list[str]) -> bool:
 # 4. Convert to data structure which can be saved
 # 5. Save to new JSON file - celeste_data_file_writer.writeLogicToJsonDataFile
 
-rawCelesteLocationData = readCelesteLocationData()
+PULL_FROM_FILE = False
+
+# 0 - Get locations
+DebugLogger.logDebug("Generating logic file.")
+locations: List[CelesteLocationCheck]
+if PULL_FROM_FILE:
+    DebugLogger.logDebug("Pulling locations from file.")
+    rawCelesteLocationData = readCelesteLocationData()
+    locations = rawCelesteLocationData.locations
+else:
+    DebugLogger.logDebug("Generating locations on the fly.")
+    locations = generateLocationChecks(False)
 
 # 1 - Map rule values as needed to prep for Lua import
-handleLogicDataMapping(rawCelesteLocationData)
+DebugLogger.logDebug("Mapping logic data (needed for lua import).")
+handleLogicDataMapping(locations)
 
-locations = rawCelesteLocationData.locations
 locationLogic: List[LocationCheckLogic] = []
-for location in locations:
+for index, location in enumerate(locations):
     allRules: List[List[str]] = []
 
     # 2 - Collapse "rule paths" into logical ANDs and ORs, appending multiple "rule paths" using ORs
@@ -197,6 +210,9 @@ for location in locations:
             allRules,
         )
     )
+
+    if index % 10 == 0:
+        DebugLogger.logDebug(f"Converted {index + 1} locations into logic format.")
 
 # 5 - Write to file
 writeLogicToJsonDataFile(locationLogic)

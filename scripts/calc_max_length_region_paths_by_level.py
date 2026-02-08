@@ -1,6 +1,6 @@
 from data.celeste_data_file_reader import readCelesteLocationData
 
-
+# You must have run ./scripts/generate_location_paths.py before executing this script.
 rawCelesteLocationData = readCelesteLocationData()
 maxRegionPathLengthByLevel = {}
 
