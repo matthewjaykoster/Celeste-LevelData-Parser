@@ -835,6 +835,7 @@ def generateLocationChecks(
     # Core A - car
     # Core B - all checkpoints and level clear
     # Summit A - all checkpoints
+    # Farewell - f-door - Event Horizon
 
     startTime = time.perf_counter()
     lastCheckpointTime = startTime

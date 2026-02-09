@@ -61,12 +61,12 @@ def collapseLocationCheckPathLogic(rules: List[List[List[str]]]) -> List[List[st
     # Start with one empty path (neutral element for AND)
     collapsedPaths: List[set[str]] = [set()]
 
-    for step in rules:
+    for orSet in rules:
         nextPaths: List[set[str]] = []
 
         for existing in collapsedPaths:
-            for option in step:
-                merged = existing | set(option)
+            for andSet in orSet:
+                merged = existing | set(andSet)
                 nextPaths.append(merged)
 
         collapsedPaths = nextPaths
@@ -165,7 +165,9 @@ def remapLogicRuleSets(
     remappedLogic: List[List[List[str]]] = []
 
     for orSet in logic:
-        remappedLogic.append(remapIndividualLogicRule(orSet))
+        remappedOrSet = remapIndividualLogicRule(orSet)
+        if len(remappedOrSet):
+            remappedLogic.append(remappedOrSet)
 
     return remappedLogic
 
@@ -197,9 +199,9 @@ def violatesKeysanityRule(rule: list[str]) -> bool:
 # 4. Convert to data structure which can be saved
 # 5. Save to new JSON file - celeste_data_file_writer.writeLogicToJsonDataFile
 
-DRY_RUN = True  # If true, do not write to file
+DRY_RUN = False  # If true, do not write to file
 EDIT_MODE = True  # Edit existing file rather than overwrite
-LOCATION_FILTERS = {"LEVEL_NAME": "", "ROOM_NAME": "", "LOCATION_NAME": ""}
+LOCATION_FILTERS = {"LEVEL_NAME": "3a", "ROOM_NAME": "08-x", "LOCATION_NAME": ""}
 PULL_LOCATIONS_FROM_FILE = (
     False  # Pull locations from pre-calculated file, rather than calc on the fly
 )
@@ -240,9 +242,6 @@ DebugLogger.logDebug("Beginning location to logic conversion.")
 locationLogic: List[LocationCheckLogic] = []
 for index, location in enumerate(locations):
     allRules: List[List[str]] = []
-
-    # TODO - add some targeted editing here so I can change some JSON in-place (basically
-    # so I don't have to recalc everything when I find an issue but can target specific locations)
 
     # 2 - Collapse "rule paths" into logical ANDs and ORs, appending multiple "rule paths" using ORs
     if len(location.region_paths_to_location) > 0:
